@@ -33,6 +33,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 		self.min_cts_interval = 1.0 
 		self.inflight_target = 0
+		self.planner_buffer_size = 0
 
 		eventManager().subscribe(Events.CONNECTING, self.on_connecting)
 		eventManager().subscribe(Events.DISCONNECTED, self.on_disconnected)
