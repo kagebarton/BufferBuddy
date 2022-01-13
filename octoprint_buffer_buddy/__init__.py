@@ -215,9 +215,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 			if should_send and self.enabled:
 				# Ensure _clear_to_send._max is at least 2, otherwise triggering _clear_to_send won't do anything
-				if comm._clear_to_send._max < 2:
-					self._logger.warn("setting 'ok buffer size' / comm._clear_to_send._max to 2 cause plugin doesn't work at 1")
-					comm._clear_to_send._max = 2
 
 				# If the command queue is empty, triggering clear_to_send won't do anything
 				# so we try to make sure something's in there
