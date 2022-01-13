@@ -224,10 +224,12 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				#if queue_size == 0: 
 				#	self._logger.debug("command queue empty, prod comm to send more with _continue_sending()")
 				comm._continue_sending()
-				comm._continue_sending()
-				self._logger.debug("detected available command buffer, triggering a send")
-				# this enables the send loop to send if it's waiting
 				comm._clear_to_send.set() # Is there a point calling this if _clear_to_send is at max?
+				self._logger.debug("1 -detected available command buffer, triggering a send")
+				# this enables the send loop to send if it's waiting
+				comm._continue_sending()
+				comm._clear_to_send.set() # Is there a point calling this if _clear_to_send is at max?
+				self._logger.debug("2 - detected available command buffer, triggering a send")
 				self.clear_to_sends_triggered += 1
 				self.last_cts = monotonic_time()
 				#should_report = True
