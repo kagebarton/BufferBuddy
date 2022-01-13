@@ -218,9 +218,9 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 				# If the command queue is empty, triggering clear_to_send won't do anything
 				# so we try to make sure something's in there
-				if queue_size == 0: 
-					self._logger.debug("command queue empty, prod comm to send more with _continue_sending()")
-					comm._continue_sending()
+				#if queue_size == 0: 
+				#	self._logger.debug("command queue empty, prod comm to send more with _continue_sending()")
+				comm._continue_sending()
 				self._logger.debug("detected available command buffer, triggering a send")
 				# this enables the send loop to send if it's waiting
 				comm._clear_to_send.set() # Is there a point calling this if _clear_to_send is at max?
