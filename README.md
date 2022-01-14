@@ -43,7 +43,11 @@ Marlin config:
 #define TX_BUFFER_SIZE 128
 #define RX_BUFFER_SIZE 512
 #define ADVANCED_OK
+#define BAUDRATE 500000
 
+** Important ** Tested using USART connection instead of USB.
+
+** No test was done on resend procedure.
 
 ## Setup
 

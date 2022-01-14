@@ -1,7 +1,7 @@
 /*
  * View model for BufferBuddy
  *
- * Author: chendo
+ * Author: chendo - updated by fflosi
  * License: AGPLv3
  */
 $(function() {

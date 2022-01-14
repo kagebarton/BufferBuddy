@@ -10,9 +10,9 @@ license: AGPLv3
 # TODO
 date: 2020-10-13
 
-homepage: https://github.com/chendo/BufferBuddy
-source: https://github.com/chendo/BufferBuddy
-archive: https://github.com/chendo/BufferBuddy/archive/main.zip
+homepage: https://github.com/fflosi/BufferBuddy
+source: https://github.com/fflosi/BufferBuddy
+archive: https://github.com/fflosi/BufferBuddy/archive/main.zip
 
 # TODO
 # Set this to true if your plugin uses the dependency_links setup parameter to include

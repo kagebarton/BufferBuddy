@@ -227,7 +227,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				# this enables the send loop to send if it's waiting
 				self.clear_to_sends_triggered += 1
 				self.last_cts = monotonic_time()
-				#should_report = True
+				#should_report = True # no need to update every send. keep updating based only on time to reduce load.
 
 			if should_report:
 				self.send_message("update", {

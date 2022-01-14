@@ -21,13 +21,13 @@ plugin_version = "0.1.1"
 plugin_description = """Buffer Buddy aims to prevent print quality issues when printing over USB by keeping your printer's buffers full"""
 
 # The plugin's author. Can be overwritten within OctoPrint's internal data via __plugin_author__ in the plugin module
-plugin_author = "chendo"
+plugin_author = "fflosi"
 
 # The plugin's author's mail address.
-plugin_author_email = "bufferbuddy@chen.do"
+plugin_author_email = "."
 
 # The plugin's homepage URL. Can be overwritten within OctoPrint's internal data via __plugin_url__ in the plugin module
-plugin_url = "https://github.com/chendo/BufferBuddy"
+plugin_url = "https://github.com/fflosi/BufferBuddy" # original by chendo "https://github.com/chendo/BufferBuddy"
 
 # The plugin's license. Can be overwritten within OctoPrint's internal data via __plugin_license__ in the plugin module
 plugin_license = "AGPLv3"
