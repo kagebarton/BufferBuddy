@@ -7,6 +7,7 @@ import time
 import re
 import flask
 from octoprint.events import eventManager, Events
+import math
 
 ADVANCED_OK = re.compile(r"ok (N(?P<line>\d+) )?P(?P<planner_buffer_avail>\d+) B(?P<command_buffer_avail>\d+)")
 REPORT_INTERVAL = 1 # seconds
@@ -85,7 +86,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def set_buffer_sizes(self, planner_buffer_size, command_buffer_size):
 		self.planner_buffer_size = planner_buffer_size
 		self.command_buffer_size = command_buffer_size
-		self.inflight_target = min(command_buffer_size - 1, INFLIGHT_TARGET_MAX)
+		self.inflight_target = min(math.floor(planner_buffer_size) / 2, INFLIGHT_TARGET_MAX) # half of planner_buffer_size is enough> it means we have full planner + 50% on buffer.
 		self.state = 'detected'
 		self.advanced_ok_detected = True
 		self._logger.info("Detected planner buffer size as {}, command buffer size as {}, setting inflight_target to {}".format(planner_buffer_size, command_buffer_size, self.inflight_target))
@@ -209,20 +210,20 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			if (monotonic_time() - self.last_report) > REPORT_INTERVAL:
 				should_report = True
 
-			if command_buffer_avail > 1: # aim to keep at least one spot free
+			if command_buffer_avail > 2: # As we are going to send, and _monitor thread of Octoprint will also send due to OK received, we need to have at leat 2 spots.
 				if inflight < inflight_target and (monotonic_time() - self.last_cts) > self.min_cts_interval:
 					should_send = True
 
 			if should_send and self.enabled:
-				# Ensure _clear_to_send._max is at least 2, otherwise triggering _clear_to_send won't do anything
-
-				# If the command queue is empty, triggering clear_to_send won't do anything
-				# so we try to make sure something's in there
-				#if queue_size == 0: 
-				#	self._logger.debug("command queue empty, prod comm to send more with _continue_sending()")
-				comm._continue_sending()
-				comm._clear_to_send.set() # Is there a point calling this if _clear_to_send is at max?
-				self._logger.debug("1 -detected available command buffer, triggering a send")
+				# user must change _clear_to_send._max to at least 2 on Octoprint interface -- firmware protocol "ok buffer size"
+				# On Octoprint code _continue_sending() is limiting the command queue size to 1. The line below needs to be changed on comm.py or the plugin will not work.
+				# while self._active and not self._send_queue.qsize():
+				# -- Change to
+				# while self._active and (self._send_queue.qsize() < self._ack_max):
+				# This will set the command queue to the same size as _clear_to_send._max, so it will work as default for all users and only affect those who change "ok buffer size" on the interface
+				comm._continue_sending() # always call this, as Octoprint limits the addition of commands to queue anyway.
+				comm._clear_to_send.set() # allways need to call if we wish to send additional command.
+				self._logger.debug("Detected available command buffer, triggering a send")
 				# this enables the send loop to send if it's waiting
 				self.clear_to_sends_triggered += 1
 				self.last_cts = monotonic_time()
@@ -274,12 +275,12 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 				# version check: github repository
 				type="github_release",
-				user="chendo",
+				user="fflosi",
 				repo="BufferBuddy",
 				current=self._plugin_version,
 
 				# update method: pip
-				pip="https://github.com/chendo/BufferBuddy/archive/{target_version}.zip"
+				pip="https://github.com/fflosi/BufferBuddy/archive/{target_version}.zip"
 			)
 		)
 
