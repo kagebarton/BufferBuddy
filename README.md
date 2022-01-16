@@ -53,5 +53,5 @@ Marlin config:
 
 This fork is not on the plugin repository
 Install from plugin Manager using the link bellow:
-https://github.com/fflosi/BufferBuddy/archive/refs/heads/main.zip
+https://github.com/fflosi/BufferBuddy/releases/download/0.1.1/v0.1.1.zip
 
