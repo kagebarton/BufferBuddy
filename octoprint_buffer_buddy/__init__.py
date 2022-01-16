@@ -69,7 +69,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	def on_print_started(self, event, payload):
 		self.reset_statistics()
-		self.state = 'printing'
+		self.state = 'waiting_to_start' # original printing
 		self.send_plugin_state()
 
 	def on_print_finish(self, event, payload):
@@ -181,10 +181,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 			if matches is None or matches.group('line') is None:
 				return line
-				
-			ok_line_number = int(matches.group('line'))
-			if(ok_line_number < self.startafter):
-				return line
+
 
 			current_line_number = comm._current_line
 
@@ -197,12 +194,20 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 					self.state = 'stopped'
 					return line
 
+			ok_line_number = int(matches.group('line'))
 			command_buffer_avail = int(matches.group('command_buffer_avail'))
 			planner_buffer_avail = int(matches.group('planner_buffer_avail'))
 			queue_size = comm._send_queue._qsize()
 			inflight_target = self.sd_inflight_target if comm.isStreaming() else self.inflight_target
 			inflight = current_line_number - ok_line_number
 			inflight += comm._clear_to_send._counter # If there's a clear_to_send pending, we need to count it as inflight cause it will be soon
+
+			if(self.state == "waiting_to_start"):
+				if(ok_line_number < self.startafter):
+					self.enabled = False
+				else:
+					self.state = 'printing'
+					self.enabled = self.originalenabled
 
 			should_report = False
 			should_send = False
