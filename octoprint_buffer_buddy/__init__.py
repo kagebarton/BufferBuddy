@@ -109,6 +109,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			sd_inflight_target=4,
 			stopcommand = "M31",
 			startafter = 50
+			startafterZ = 0
 		)
 
 	def on_settings_save(self, data):
@@ -121,6 +122,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.sd_inflight_target = self._settings.get_int(["sd_inflight_target"])
 		self.stopcommand = self._settings.get(["stopcommand"])
 		self.startafter = self._settings.get_int(["startafter"])
+		self.startafterZ = self._settings.get_int(["startafterZ"])
 		self.originalenabled = self.enabled
 
 	##~~ Frontend stuff
@@ -185,15 +187,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 			current_line_number = comm._current_line
 
-			if(self.state == 'stopping'):
-				self._logger.debug("current_line_number - 1 = " + str(current_line_number -1) + " ok_line_number = " + str(ok_line_number))
-				if((current_line_number -1) != ok_line_number):
-					return "echo:busy: processing"
-				else:
-					self._logger.debug("Stopped")
-					self.state = 'stopped'
-					return line
-
 			ok_line_number = int(matches.group('line'))
 			command_buffer_avail = int(matches.group('command_buffer_avail'))
 			planner_buffer_avail = int(matches.group('planner_buffer_avail'))
@@ -203,11 +196,20 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			inflight += comm._clear_to_send._counter # If there's a clear_to_send pending, we need to count it as inflight cause it will be soon
 
 			if(self.state == "waiting_to_start"):
-				if(ok_line_number < self.startafter):
+				if((ok_line_number < self.startafter) or (self._currentZ < self.startafterZ)):
 					self.enabled = False
 				else:
 					self.state = 'printing'
 					self.enabled = self.originalenabled
+
+			if(self.state == 'stopping'):
+				self._logger.debug("current_line_number - 1 = " + str(current_line_number -1) + " ok_line_number = " + str(ok_line_number))
+				if((current_line_number -1) != ok_line_number):
+					return "echo:busy: processing"
+				else:
+					self._logger.debug("Stopped")
+					self.state = 'stopped'
+					return line
 
 			should_report = False
 			should_send = False

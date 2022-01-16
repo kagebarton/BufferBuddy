@@ -29,7 +29,7 @@
 			<input type="text" class="input-block-level" data-bind="value: settings.plugins.buffer_buddy.stopcommand"></input>
       <br />
       <small>
-        Will stop buffering and return to normal operation when this command is sent to printer.
+        Buffer Buddy Will stop buffering and return to monitoring only when this command is sent to printer. Any Gcode command can be used.
         <br />
       </small>
 		</div>
@@ -37,10 +37,21 @@
   <div class="control-group">
 		<label class="control-label">{{ _('Only start after x command was sent') }}</label>
 		<div class="controls">
-			<input type="number" min="1" max="35000" style="width: 4em" class="input-block-level" data-bind="value: settings.plugins.buffer_buddy.startafter"></input>
+			<input type="number" min="1" max="35000" style="width: 8em" class="input-block-level" data-bind="value: settings.plugins.buffer_buddy.startafter"></input>
       <br />
       <small>
-        Will wait to start buffering after this many commands was sent and received by the printer (Consider Ok enabled commands only) Max 35000.
+        Will wait to start buffering after this many commands was sent and received by the printer (Consider Ok enabled commands only) Max 35000. Set to 0 to disable.
+        <br />
+      </small>
+		</div>
+	</div>
+  <div class="control-group">
+		<label class="control-label">{{ _('Only start after x layer height') }}</label>
+		<div class="controls">
+			<input type="number" min="0" max="35000" style="width: 5em" class="input-block-level" data-bind="value: settings.plugins.buffer_buddy.startafterZ"></input>
+      <br />
+      <small>
+        Will wait to start buffering only after this layer height Max 35000. Useful to keep small buffer on first layer for fast cancel. Set to zero to start right away.
         <br />
       </small>
 		</div>
