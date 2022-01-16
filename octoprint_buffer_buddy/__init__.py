@@ -108,7 +108,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			min_cts_interval=0.1,
 			sd_inflight_target=4,
 			stopcommand = "M31",
-			startafter = 50
+			startafter = 50,
 			startafterZ = 0
 		)
 
