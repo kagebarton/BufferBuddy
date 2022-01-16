@@ -183,7 +183,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 			if(self.state == 'finishing'):
 				self._logger.debug("current_line_number = " + str(current_line_number) + " ok_line_number = " + str(ok_line_number))
-				if(current_line_number != ok_line_number):
+				if(current_line_number != ok_line_number -1):
 					return None
 				else:
 					return line
