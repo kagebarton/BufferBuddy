@@ -27,6 +27,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.last_report = 0
 		
 		self.enabled = False
+		self.originalenabled = False
 
 		self.state = 'initialising'
 
@@ -82,6 +83,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.resends_detected = 0
 		self.clear_to_sends_triggered = 0
 		self.did_resend = False
+		self.enabled = self.originalenabled
 
 	def set_buffer_sizes(self, planner_buffer_size, command_buffer_size):
 		self.planner_buffer_size = planner_buffer_size
@@ -119,6 +121,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.sd_inflight_target = self._settings.get_int(["sd_inflight_target"])
 		self.stopcommand = self._settings.get(["stopcommand"])
 		self.startafter = self._settings.get_int(["startafter"])
+		self.originalenabled = self.enabled
 
 	##~~ Frontend stuff
 	def send_message(self, type, message):
