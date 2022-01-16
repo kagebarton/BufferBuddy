@@ -13,7 +13,7 @@ This plugin requires `ADVANCED_OK` to function.
 - No longer check if there is command on queue before calling "comm._continue_sending()". Octoprint limits the addition of commands to queue anyway.
 - Changed self.inflight_target to be half of planner_buffer_size. It means we have full planner + 50% on buffer.
 - will check if command_buffer_avail is > 2 as we are going to send an additional command but _monitor thread of Octoprint will also send due to OK received, so we need to have at least 2 spots
-- no longer change _clear_to_send._max user must change _clear_to_send._max to at least 2 on Octoprint interface -- firmware protocol "ok buffer size"
+- no longer change _clear_to_send._max. User must change _clear_to_send._max to at least 2 on Octoprint interface -- firmware protocol "ok buffer size"
 - On Octoprint code _continue_sending() is limiting the command queue size to 1. 
     The line below needs to be changed on comm.py or the plugin will not work.
     
