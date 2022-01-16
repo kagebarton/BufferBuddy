@@ -176,7 +176,18 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				return line
 				
 			ok_line_number = int(matches.group('line'))
+			if(ok_line_number < 20):
+				return line
+
 			current_line_number = comm._current_line
+
+			if(self.state == 'finishing'):
+				self._logger.debug("current_line_number = " + str(current_line_number) + " ok_line_number = " + str(ok_line_number))
+				if(current_line_number != ok_line_number):
+					return None
+				else:
+					return line
+
 			command_buffer_avail = int(matches.group('command_buffer_avail'))
 			planner_buffer_avail = int(matches.group('planner_buffer_avail'))
 			queue_size = comm._send_queue._qsize()
@@ -297,6 +308,14 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				dict(type="settings", custom_bindings=False)
 		]
 
+	def gcode_sent(self, comm_instance, phase, cmd, cmd_type, gcode, *args, **kwargs):
+		# Check if turning off struder to detect print end
+		if gcode and cmd == "M104 S0":
+			self._logger.debug("State changed to finishing")
+			self.state = 'finishing'
+		return None
+
+
 # If you want your plugin to be registered within OctoPrint under a different name than what you defined in setup.py
 # ("OctoPrint-PluginSkeleton"), you may define that here. Same goes for the other metadata derived from setup.py that
 # can be overwritten via __plugin_xyz__ control properties. See the documentation for that.
@@ -317,5 +336,6 @@ def __plugin_load__():
 	__plugin_hooks__ = {
 		"octoprint.plugin.softwareupdate.check_config": __plugin_implementation__.get_update_information,
 		"octoprint.comm.protocol.gcode.received": __plugin_implementation__.gcode_received,
+		"octoprint.comm.protocol.gcode.sent": __plugin_implementation__.gcode_sent,
 	}
 
