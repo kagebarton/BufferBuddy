@@ -190,7 +190,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				if((current_line_number -1) != ok_line_number):
 					return "echo:busy: processing"
 				else:
-					self.state == 'stopped'
+					self._logger.debug("Stopped")
+					self.state = 'stopped'
 					return line
 
 			command_buffer_avail = int(matches.group('command_buffer_avail'))
