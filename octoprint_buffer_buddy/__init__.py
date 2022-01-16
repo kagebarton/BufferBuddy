@@ -196,7 +196,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			inflight += comm._clear_to_send._counter # If there's a clear_to_send pending, we need to count it as inflight cause it will be soon
 
 			if(self.state == "waiting_to_start"):
-				if((ok_line_number < self.startafter) or (self._currentZ < self.startafterZ)):
+				if((ok_line_number < self.startafter) or (comm._currentZ < self.startafterZ)):
 					self.enabled = False
 				else:
 					self.state = 'printing'
