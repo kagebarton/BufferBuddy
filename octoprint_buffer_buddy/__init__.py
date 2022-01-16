@@ -190,6 +190,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				if((current_line_number -1) != ok_line_number):
 					return None
 				else:
+					self.state == 'stopped'
 					return line
 
 			command_buffer_avail = int(matches.group('command_buffer_avail'))
