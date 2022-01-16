@@ -248,8 +248,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				# -- Change to
 				# while self._active and (self._send_queue.qsize() < self._ack_max):
 				# This will set the command queue to the same size as _clear_to_send._max, so it will work as default for all users and only affect those who change "ok buffer size" on the interface
-				comm._continue_sending() # always call this, as Octoprint limits the addition of commands to queue anyway.
 				comm._clear_to_send.set() # allways need to call if we wish to send additional command.
+				comm._continue_sending() # always call this, as Octoprint limits the addition of commands to queue anyway.
 				self._logger.debug("Detected available command buffer, triggering a send")
 				# this enables the send loop to send if it's waiting
 				self.clear_to_sends_triggered += 1
