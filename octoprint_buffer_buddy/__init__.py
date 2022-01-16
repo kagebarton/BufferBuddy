@@ -122,7 +122,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.sd_inflight_target = self._settings.get_int(["sd_inflight_target"])
 		self.stopcommand = self._settings.get(["stopcommand"])
 		self.startafter = self._settings.get_int(["startafter"])
-		self.startafterZ = self._settings.get_int(["startafterZ"])
+		self.startafterZ = self._settings.get_float(["startafterZ"])
 		self.originalenabled = self.enabled
 
 	##~~ Frontend stuff
