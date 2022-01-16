@@ -105,6 +105,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			enabled=True,
 			min_cts_interval=0.1,
 			sd_inflight_target=4,
+			stopcommand = ""
 		)
 
 	def on_settings_save(self, data):
@@ -115,6 +116,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.enabled = self._settings.get_boolean(["enabled"])
 		self.min_cts_interval = self._settings.get_float(["min_cts_interval"])
 		self.sd_inflight_target = self._settings.get_int(["sd_inflight_target"])
+		self.stopcommand = self._settings.get(["stopcommand"])
 
 	##~~ Frontend stuff
 	def send_message(self, type, message):
@@ -310,8 +312,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	def gcode_sent(self, comm_instance, phase, cmd, cmd_type, gcode, *args, **kwargs):
 		# Check if turning off struder to detect print end
-		if gcode and cmd == "M104 S0":
-			self._logger.debug("State changed to finishing")
+		if gcode and cmd == self.stopcommand:
+			self._logger.debug("State changed to finishing - stop command = " + cmd)
 			self.state = 'finishing'
 		return None
 
