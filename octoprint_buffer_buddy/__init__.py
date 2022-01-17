@@ -203,12 +203,22 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 					self.enabled = self.originalenabled
 
 			if(self.state == 'stopping'):
-				self._logger.debug("current_line_number - 1 = " + str(current_line_number -1) + " ok_line_number = " + str(ok_line_number))
+				self._logger.debug("stopping - current_line_number - 1 = " + str(current_line_number -1) + " ok_line_number = " + str(ok_line_number))
 				if((current_line_number -1) != ok_line_number):
 					return "echo:busy: processing"
 				else:
 					self._logger.debug("Stopped")
 					self.state = 'stopped'
+					return line
+
+			if(self.state == 'sync'):
+				self._logger.debug("Sync - current_line_number - 1 = " + str(current_line_number -1) + " ok_line_number = " + str(ok_line_number))
+				if((current_line_number -1) != ok_line_number):
+					return "echo:busy: processing"
+				else:
+					self._logger.debug("Sync done")
+					self.state = 'printing'
+					self.enabled = self.originalenabled
 					return line
 
 			should_report = False
@@ -269,7 +279,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 					"cts_triggered": self.clear_to_sends_triggered,
 					"send_queue_size": queue_size,
 				})
-				self._logger.debug("current line: {} ok line: {} buffer avail: {} inflight: {} cts: {} cts_max: {} queue: {}".format(current_line_number, ok_line_number, command_buffer_avail, inflight, comm._clear_to_send._counter, comm._clear_to_send._max, queue_size))
+				self._logger.debug("State: {} current line: {} ok line: {} buffer avail: {} inflight: {} cts: {} cts_max: {} queue: {}".format(self.state, current_line_number, ok_line_number, command_buffer_avail, inflight, comm._clear_to_send._counter, comm._clear_to_send._max, queue_size))
 				self.last_report = monotonic_time()
 				if self.enabled:
 					self.set_status('Active')
@@ -325,13 +335,19 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		]
 
 	def gcode_sent(self, comm_instance, phase, cmd, cmd_type, gcode, *args, **kwargs):
-		# Check if turning off struder to detect print end
 		if gcode and cmd == self.stopcommand:
 			self._logger.debug("State changed to stopping buffer - stop command = " + cmd)
 			self.state = 'stopping'
 			self.enabled = False
 		return None
 
+	def gcode_queuing(self, comm_instance, phase, cmd, cmd_type, gcode, *args, **kwargs):
+		# Check if M command is going to be sent to sync queue.
+		if gcode and cmd.startswith('M'):
+			self._logger.debug("State changed to sync - sync command = " + cmd)
+			self.state = 'sync'
+			self.enabled = False
+		return None
 
 # If you want your plugin to be registered within OctoPrint under a different name than what you defined in setup.py
 # ("OctoPrint-PluginSkeleton"), you may define that here. Same goes for the other metadata derived from setup.py that
@@ -354,5 +370,6 @@ def __plugin_load__():
 		"octoprint.plugin.softwareupdate.check_config": __plugin_implementation__.get_update_information,
 		"octoprint.comm.protocol.gcode.received": __plugin_implementation__.gcode_received,
 		"octoprint.comm.protocol.gcode.sent": __plugin_implementation__.gcode_sent,
+		"octoprint.comm.protocol.gcode.queuing": __plugin_implementation__.gcode_queuing,
 	}
 
