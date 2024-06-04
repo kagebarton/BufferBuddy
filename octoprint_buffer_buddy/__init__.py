@@ -12,7 +12,7 @@ import math
 ADVANCED_OK = re.compile(r"ok (N(?P<line>\d+) )?P(?P<planner_buffer_avail>\d+) B(?P<command_buffer_avail>\d+)")
 REPORT_INTERVAL = 1 # seconds
 POST_RESEND_WAIT = 0 # seconds
-INFLIGHT_TARGET_MAX = 45 # Octoprint has a hard limit of 50 entries in the buffer for resends so it must be less than that, with a buffer
+INFLIGHT_TARGET_MAX = 255 # Octoprint has a hard limit of 50 entries in the buffer for resends so it must be less than that, with a buffer
 
 class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 						octoprint.plugin.AssetPlugin,
@@ -88,7 +88,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def set_buffer_sizes(self, planner_buffer_size, command_buffer_size):
 		self.planner_buffer_size = planner_buffer_size
 		self.command_buffer_size = command_buffer_size
-		self.inflight_target = min(math.floor(planner_buffer_size) / 2, INFLIGHT_TARGET_MAX) # half of planner_buffer_size is enough> it means we have full planner + 50% on buffer.
+		self.inflight_target = min(command_buffer_size - 1, INFLIGHT_TARGET_MAX)
 		self.state = 'detected'
 		self.advanced_ok_detected = True
 		self._logger.info("Detected planner buffer size as {}, command buffer size as {}, setting inflight_target to {}".format(planner_buffer_size, command_buffer_size, self.inflight_target))
