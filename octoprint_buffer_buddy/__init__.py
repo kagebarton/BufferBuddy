@@ -12,7 +12,7 @@ import math
 ADVANCED_OK = re.compile(r"ok (N(?P<line>\d+) )?P(?P<planner_buffer_avail>\d+) B(?P<command_buffer_avail>\d+)")
 REPORT_INTERVAL = 1 # seconds
 POST_RESEND_WAIT = 0 # seconds
-INFLIGHT_TARGET_MAX = 45 # Octoprint has a hard limit of 50 entries in the buffer for resends so it must be less than that, with a buffer
+INFLIGHT_TARGET_MAX = 255 # Octoprint has a hard limit of 50 entries in the buffer for resends so it must be less than that, with a buffer
 
 class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 						octoprint.plugin.AssetPlugin,
