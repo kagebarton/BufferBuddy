@@ -86,7 +86,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def set_buffer_sizes(self, planner_buffer_size, command_buffer_size):
 		self.planner_buffer_size = planner_buffer_size
 		self.command_buffer_size = command_buffer_size
-		self.inflight_target = min(math.floor(planner_buffer_size) / 2, INFLIGHT_TARGET_MAX) # half of planner_buffer_size is enough> it means we have full planner + 50% on buffer.
+		self.inflight_target = min(command_buffer_size - 1, INFLIGHT_TARGET_MAX)
+		#self.inflight_target = min(math.floor(planner_buffer_size) / 2, INFLIGHT_TARGET_MAX) # half of planner_buffer_size is enough> it means we have full planner + 50% on buffer.
 		self.state = 'detected'
 		self.advanced_ok_detected = True
 		self._logger.info("Detected planner buffer size as {}, command buffer size as {}, setting inflight_target to {}".format(planner_buffer_size, command_buffer_size, self.inflight_target))
