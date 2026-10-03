@@ -12,7 +12,7 @@ ADVANCED_OK = re.compile(r"ok (N(?P<line>\d+) )?P(?P<planner_buffer_avail>\d+) B
 REPORT_INTERVAL = 1 # seconds
 POST_RESEND_WAIT = 0 # seconds
 RESEND_HISTORY_MARGIN = 5 # lines. Octoprint can only resend lines still in its history (serial.lastLineBufferSize, default 50), so keep inflight this far below it
-MIN_CLEAR_TO_SEND_MAX = 2 # "ok buffer size" (serial.ackMax) defaults to 1, which caps away the clear to send we add on top of Octoprint's own
+CLEAR_TO_SEND_HEADROOM = 2 # clear to sends beyond the inflight target: ours plus Octoprint's own for the same ok
 DEFAULT_RX_BUFFER_SIZE = 128 # bytes, Marlin's default RX_BUFFER_SIZE
 ASSUMED_LINE_BYTES = 48 # bytes per line on the wire, "N1234 " and "*123" included, to turn the RX buffer size into lines
 
@@ -186,14 +186,18 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			self.send_plugin_state()
 
 	def raise_clear_to_send_max(self, comm):
-		# Only on this connection: the saved "ok buffer size" is untouched and the next connection starts from it again
+		# Only on this connection: the saved "ok buffer size" is untouched and the next connection starts from it again.
+		# Octoprint caps its pending clear to sends at this size and every ok adds one, so whenever its send loop falls
+		# behind, the ones over the cap are thrown away and lines drop out of flight for good. Leave room for all of them.
 		clear_to_send = comm._clear_to_send
-		if self.raised_comm is comm or clear_to_send.max is None or clear_to_send.max >= MIN_CLEAR_TO_SEND_MAX:
+		wanted = max(self.inflight_target, self.sd_inflight_target) + CLEAR_TO_SEND_HEADROOM
+		if clear_to_send.max is None or clear_to_send.max >= wanted:
 			return
-		self.original_clear_to_send_max = clear_to_send.max
-		clear_to_send.max = MIN_CLEAR_TO_SEND_MAX
-		self.raised_comm = comm
-		self._logger.info("Raised this connection's ok buffer size from {} to {}".format(self.original_clear_to_send_max, MIN_CLEAR_TO_SEND_MAX))
+		if self.raised_comm is not comm:
+			self.original_clear_to_send_max = clear_to_send.max
+			self.raised_comm = comm
+		clear_to_send.max = wanted
+		self._logger.info("Raised this connection's ok buffer size from {} to {}".format(self.original_clear_to_send_max, wanted))
 
 	def restore_clear_to_send_max(self):
 		comm = self.raised_comm
