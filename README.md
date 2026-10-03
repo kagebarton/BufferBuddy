@@ -2,28 +2,29 @@
 
 BufferBuddy aims to prevent print quality issues when printing over USB with Octoprint. Designed for Marlin with `ADVANCED_OK` support, but may work for other firmwares that also support `ADVANCED_OK` output.
 
-This is a fork from https://github.com/chendo/BufferBuddy for personal use. I'm sharing is case anyone wishes to use it.
+This is a fork of https://github.com/fflosi/BufferBuddy, which is itself a fork of the original https://github.com/chendo/BufferBuddy.
 
 **WARNING:** See details on original page https://github.com/chendo/BufferBuddy**
 
 This plugin requires `ADVANCED_OK` to function.
 
-## Main changes from original
+## No setup needed
 
-- No longer check if there is command on queue before calling "comm._continue_sending()". Octoprint limits the addition of commands to queue anyway.
-- Changed self.inflight_target to be half of planner_buffer_size. It means we have full planner + 50% on buffer.
-- will check if command_buffer_avail is > 2 as we are going to send an additional command but _monitor thread of Octoprint will also send due to OK received, so we need to have at least 2 spots
-- no longer change _clear_to_send._max user must change _clear_to_send._max to at least 2 on Octoprint interface -- firmware protocol "ok buffer size"
-- On Octoprint code _continue_sending() is limiting the command queue size to 1. 
-    The line below needs to be changed on comm.py or the plugin will not work.
-    
-    while self._active and not self._send_queue.qsize():
-    -- Change to
-    while self._active and (self._send_queue.qsize() < self._ack_max):
-    
-    This will set the command queue to the same size as _clear_to_send._max, so it will work as default for all users and only affect those who change "ok buffer size" on the interface. Eventually i will ask for an update on octoprint, but right now you need to change that manually.
+Install it and it works on a stock OctoPrint. There is no `comm.py` to patch and no "ok buffer size" to change:
 
+- When it first sends an extra line on a connection, BufferBuddy raises that connection's "ok buffer size" to 2. Your saved setting is never changed, and disabling the plugin restores the original value.
+- OctoPrint only refills its send queue when it's empty, so when several `ok`s arrive at once it sends one line where it should send several. BufferBuddy keeps a line queued for every pending clear to send, using the same steps as OctoPrint's `_continue_sending()`. OctoPrint's own code is never patched.
+- Lines waiting in that queue still go out after a pause or cancel (OctoPrint doesn't clear it), so expect up to 2 more short moves than stock OctoPrint, on top of what's already in the printer's buffer.
+- It only sends an extra line if everything the printer hasn't moved into its command queue yet still fits in the printer's serial RX buffer (setting, default 128 bytes = Marlin's `RX_BUFFER_SIZE` default). ADVANCED_OK doesn't report that buffer, and overflowing it drops bytes and causes resends.
+- During a resend it adds no lines and never swallows an `ok`. (The original swallowed them, which can hang a print on Marlin: OctoPrint then repeats a line Marlin has already processed, and Marlin silently ignores it.)
+- On every connection it checks that the OctoPrint internals it relies on still exist. If any are missing, the sidebar shows "Unsupported OctoPrint version" and the plugin stays inactive.
 
+## Changes from fflosi's version
+
+- Inflight target is chendo's `BUFSIZE - 1` again, capped 5 lines below OctoPrint's resend history (`serial.lastLineBufferSize`, default 50) so every line in flight can still be resent.
+- Still requires more than 2 free slots in the command buffer before sending, because OctoPrint also sends a line for the same `ok`.
+- The manual `comm.py` patch and the "ok buffer size" instructions are gone (see above).
+- Update checks point at this fork.
 
 ## Recomendations
 
@@ -53,5 +54,5 @@ Marlin config:
 
 This fork is not on the plugin repository
 Install from plugin Manager using the link bellow:
-https://github.com/fflosi/BufferBuddy/releases/download/0.1.1/v0.1.1.zip
+https://github.com/kagebarton/BufferBuddy/archive/0.2.0.zip
 

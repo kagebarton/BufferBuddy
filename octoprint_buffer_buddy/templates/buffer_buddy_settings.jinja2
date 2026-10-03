@@ -23,4 +23,14 @@
       </small>
 		</div>
 	</div>
+  <div class="control-group">
+		<label class="control-label">{{ _('Printer RX buffer size') }}</label>
+		<div class="controls">
+			<input type="number" min="48" max="65536" style="width: 6em" class="input-block-level" data-bind="value: settings.plugins.buffer_buddy.rx_buffer_size"></input> bytes
+      <br />
+      <small>
+        Your firmware's `RX_BUFFER_SIZE` (Marlin's default is 128). Lines the printer hasn't read yet wait here, and if too many arrive at once the printer drops bytes and asks for a resend. Only raise it if your firmware's buffer is bigger.
+      </small>
+		</div>
+	</div>
 </form>

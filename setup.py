@@ -14,7 +14,7 @@ plugin_package = "octoprint_buffer_buddy"
 plugin_name = "BufferBuddy"
 
 # The plugin's version. Can be overwritten within OctoPrint's internal data via __plugin_version__ in the plugin module
-plugin_version = "0.1.1"
+plugin_version = "0.2.0"
 
 # The plugin's description. Can be overwritten within OctoPrint's internal data via __plugin_description__ in the plugin
 # module
@@ -27,7 +27,7 @@ plugin_author = "fflosi"
 plugin_author_email = "."
 
 # The plugin's homepage URL. Can be overwritten within OctoPrint's internal data via __plugin_url__ in the plugin module
-plugin_url = "https://github.com/fflosi/BufferBuddy" # original by chendo "https://github.com/chendo/BufferBuddy"
+plugin_url = "https://github.com/kagebarton/BufferBuddy" # fork of fflosi "https://github.com/fflosi/BufferBuddy", original by chendo "https://github.com/chendo/BufferBuddy"
 
 # The plugin's license. Can be overwritten within OctoPrint's internal data via __plugin_license__ in the plugin module
 plugin_license = "AGPLv3"

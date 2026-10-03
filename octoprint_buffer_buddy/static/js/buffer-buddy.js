@@ -80,7 +80,9 @@ $(function() {
             self.commandBufferSize(config.command_buffer_size.toString())
             self.inflightTarget(config.inflight_target.toString())
 
-            if (config.advanced_ok_detected) {
+            if (config.compatible === false) {
+                self.status('Unsupported OctoPrint version, inactive')
+            } else if (config.advanced_ok_detected) {
                 self.status('Ready')
             }
         }
