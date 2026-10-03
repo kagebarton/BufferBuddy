@@ -24,7 +24,7 @@ Install it and it works on a stock OctoPrint. There is no `comm.py` to patch and
 - **Status**: Ready, Printing, Uploading to SD, Resend detected and so on. "(monitoring only)" means BufferBuddy is disabled in its settings and only watches.
 - **Throughput**: lines the printer acknowledged per second, over the last second. Shown during a job, along with **In flight**: lines sent but not yet acknowledged, out of the target when enabled. Stock OctoPrint keeps 1 in flight.
 - **Planner**: moves waiting in the printer's planner now, and on average over the print. This is the buffer that keeps the printer moving. When it runs low, Marlin's `SLOWDOWN` slows the print down, and when it empties the printer stops. Higher is better.
-- **Resends**: resend episodes during the print. **Extra lines sent**: lines BufferBuddy added on top of OctoPrint's own (enabled only).
+- **Resends**: resend episodes during the print. One lost byte makes the printer reject every line already sent behind it, and each of those asks for its own resend, so resends less than a second apart count as one episode. **Extra lines sent**: lines BufferBuddy added on top of OctoPrint's own (enabled only).
 
 There are no underrun counters any more. "Command underruns" counted every `ok` where the printer's command queue held nothing behind that line. That happens on nearly every line unless the planner is full, and on every line with stock OctoPrint. "Planner underruns" needed an `ok` reporting an empty planner, which never happens for a move, because Marlin adds the move to the planner before it sends the `ok`.
 

@@ -11,6 +11,7 @@ from octoprint.events import eventManager, Events
 ADVANCED_OK = re.compile(r"ok (N(?P<line>\d+) )?P(?P<planner_buffer_avail>\d+) B(?P<command_buffer_avail>\d+)")
 REPORT_INTERVAL = 1 # seconds
 POST_RESEND_WAIT = 0 # seconds
+RESEND_EPISODE_GAP = 1.0 # seconds. A resend starting this soon after the last one ended is part of the same episode: every line already in flight behind a bad one draws its own resend request
 RESEND_HISTORY_MARGIN = 5 # lines. Octoprint can only resend lines still in its history (serial.lastLineBufferSize, default 50), so keep inflight this far below it
 CLEAR_TO_SEND_HEADROOM = 2 # clear to sends beyond the inflight target: ours plus Octoprint's own for the same ok
 DEFAULT_RX_BUFFER_SIZE = 128 # bytes, Marlin's default RX_BUFFER_SIZE
@@ -106,6 +107,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.resends_detected = 0
 		self.clear_to_sends_triggered = 0
 		self.did_resend = False
+		self.last_resend_end = None
 		self.planner_queued_sum = 0
 		self.planner_samples = 0
 		self.oks_since_report = 0
@@ -296,6 +298,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 		if self.did_resend and not comm._resendActive:
 			self.did_resend = False
+			self.last_resend_end = monotonic_time()
 			self.set_status(self.activity_status(comm))
 
 		if "ok " in line:
@@ -322,7 +325,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			# because Marlin silently drops a line number it has already processed. The print then hangs.
 			if comm._resendActive:
 				if not self.did_resend:
-					self.resends_detected += 1
+					if self.last_resend_end is None or monotonic_time() - self.last_resend_end > RESEND_EPISODE_GAP:
+						self.resends_detected += 1
 					self.did_resend = True
 					self.set_status('Resend detected, backing off' if self.enabled else 'Resend detected')
 				self.last_cts = monotonic_time() + POST_RESEND_WAIT # Hack to delay before resuming CTS after resend event to give printer some time to breathe
