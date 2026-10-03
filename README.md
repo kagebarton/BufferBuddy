@@ -19,6 +19,15 @@ Install it and it works on a stock OctoPrint. There is no `comm.py` to patch and
 - During a resend it adds no lines and never swallows an `ok`. (The original swallowed them, which can hang a print on Marlin: OctoPrint then repeats a line Marlin has already processed, and Marlin silently ignores it.)
 - On every connection it checks that the OctoPrint internals it relies on still exist. If any are missing, the sidebar shows "Unsupported OctoPrint version" and the plugin stays inactive.
 
+## Sidebar
+
+- **Status**: Ready, Printing, Uploading to SD, Resend detected and so on. "(monitoring only)" means BufferBuddy is disabled in its settings and only watches.
+- **Throughput**: lines the printer acknowledged per second, over the last second. Shown during a job, along with **In flight**: lines sent but not yet acknowledged, out of the target when enabled. Stock OctoPrint keeps 1 in flight.
+- **Planner**: moves waiting in the printer's planner now, and on average over the print. This is the buffer that keeps the printer moving. When it runs low, Marlin's `SLOWDOWN` slows the print down, and when it empties the printer stops. Higher is better.
+- **Resends**: resend episodes during the print. **Extra lines sent**: lines BufferBuddy added on top of OctoPrint's own (enabled only).
+
+There are no underrun counters any more. "Command underruns" counted every `ok` where the printer's command queue held nothing behind that line. That happens on nearly every line unless the planner is full, and on every line with stock OctoPrint. "Planner underruns" needed an `ok` reporting an empty planner, which never happens for a move, because Marlin adds the move to the planner before it sends the `ok`.
+
 ## Changes from fflosi's version
 
 - Inflight target is chendo's `BUFSIZE - 1` again, capped 5 lines below OctoPrint's resend history (`serial.lastLineBufferSize`, default 50) so every line in flight can still be resent.

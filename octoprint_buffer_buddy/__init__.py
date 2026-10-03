@@ -19,7 +19,7 @@ ASSUMED_LINE_BYTES = 48 # bytes per line on the wire, "N1234 " and "*123" includ
 # Octoprint internals BufferBuddy relies on. Checked on every new connection, if any are missing BufferBuddy stays inactive
 REQUIRED_COMM_INTERNALS = (
 	"_current_line", "_clear_to_send", "_send_queue", "_resendActive", "_state", "_currentFile",
-	"STATE_STARTING", "STATE_PRINTING", "job_on_hold", "isStreaming", "isSdPrinting",
+	"STATE_STARTING", "STATE_PRINTING", "job_on_hold", "isPrinting", "isStreaming", "isSdPrinting",
 	"_send_from_command_queue", "_send_from_job_queue", "_send_from_job",
 )
 REQUIRED_CLEAR_TO_SEND_INTERNALS = ("set", "max", "counter")
@@ -39,6 +39,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.enabled = False
 
 		self.state = 'initialising'
+		self.status = 'Not connected'
 
 		self.advanced_ok_detected = False
 
@@ -67,7 +68,10 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def on_connecting(self, event, payload):
 		self.command_buffer_size = 0
 		self.planner_buffer_size = 0
+		self.advanced_ok_detected = False
 		self.state = 'detecting'
+		self.set_status('Detecting buffer sizes')
+		self.send_plugin_state()
 
 	def on_disconnected(self, event, payload):
 		self.command_buffer_size = 0
@@ -82,24 +86,39 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def on_transfer_started(self, event, payload):
 		self.reset_statistics()
 		self.state = 'transferring'
+		self.set_status('Uploading to SD')
 		self.send_plugin_state()
 
 	def on_print_started(self, event, payload):
 		self.reset_statistics()
 		self.state = 'printing'
+		self.set_status('Printing')
 		self.send_plugin_state()
 
 	def on_print_finish(self, event, payload):
-		self.set_status('Ready')
+		if self.last_update is not None:
+			self.last_update.update(self.summary_stats()) # the last report can be up to REPORT_INTERVAL old
 		self.state = 'ready'
+		self.set_status('Ready')
 		self.send_plugin_state()
 
 	def reset_statistics(self):
-		self.command_underruns_detected = 0
-		self.planner_underruns_detected = 0
 		self.resends_detected = 0
 		self.clear_to_sends_triggered = 0
 		self.did_resend = False
+		self.planner_queued_sum = 0
+		self.planner_samples = 0
+		self.oks_since_report = 0
+		self.last_report = monotonic_time()
+		self.last_update = None # the stats last sent to the sidebar, also served to browsers that load later
+
+	def summary_stats(self):
+		# Stats over the whole job, kept in the sidebar after it ends
+		return {
+			"planner_queued_avg": int(round(float(self.planner_queued_sum) / self.planner_samples)) if self.planner_samples else None,
+			"resends_detected": self.resends_detected,
+			"cts_triggered": self.clear_to_sends_triggered,
+		}
 
 	def set_buffer_sizes(self, planner_buffer_size, command_buffer_size):
 		self.planner_buffer_size = planner_buffer_size
@@ -138,6 +157,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.rx_buffer_lines = max(1, self._settings.get_int(["rx_buffer_size"]) // ASSUMED_LINE_BYTES)
 		if not self.enabled:
 			self.restore_clear_to_send_max()
+		self.send_plugin_state()
 
 	##~~ Frontend stuff
 	def send_message(self, type, message):
@@ -145,8 +165,16 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	def set_status(self, message):
 		if not self.compatible:
-			message = 'Unsupported Octoprint version, inactive'
+			message = 'Unsupported OctoPrint version, inactive'
+		if message == self.status:
+			return
+		self.status = message
 		self.send_message("status", message)
+
+	def activity_status(self, comm):
+		if comm.isStreaming():
+			return 'Uploading to SD'
+		return 'Printing' if comm.isPrinting() else 'Ready'
 
 	def send_plugin_state(self):
 		self.send_message("state", self.plugin_state())
@@ -157,10 +185,16 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			"command_buffer_size": self.command_buffer_size,
 			"inflight_target": self.inflight_target,
 			"state": self.state,
+			"status": self.status,
 			"enabled": self.enabled,
 			"advanced_ok_detected": self.advanced_ok_detected,
 			"compatible": self.compatible,
+			"stats": self.last_update,
 		}
+
+	def is_api_protected(self):
+		# The sidebar only loads this for a logged in user
+		return True
 
 	def on_api_get(self, request):
 		return flask.jsonify(state=self.plugin_state())
@@ -182,7 +216,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.compatible = not missing
 		if missing:
 			self._logger.warning("This Octoprint version lacks internals BufferBuddy needs ({}), staying inactive".format(", ".join(missing)))
-			self.set_status('Unsupported Octoprint version')
+			self.set_status('Unsupported OctoPrint version')
 			self.send_plugin_state()
 
 	def raise_clear_to_send_max(self, comm):
@@ -241,7 +275,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	# Assumptions: This is never called concurrently, and we are free to access anything in comm
 	# FIXME: Octoprint considers the job finished when the last line is sent, even when there are lines inflight
 	def gcode_received(self, comm, line, *args, **kwargs):				
-		# Try to figure out buffer sizes for underrun detection by looking at the N0 M110 N0 response
+		# Figure out the buffer sizes, for the inflight target and the planner fill, from the response to N0 M110 N0
 		# Important: This runs before on_after_startup
 		if self.planner_buffer_size == 0 and "ok N0 " in line:
 			matches = ADVANCED_OK.search(line)
@@ -253,7 +287,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				# We add +1 here as ok will always return BUFSIZE-1 as we've just sent it a command
 				command_buffer_size = int(matches.group('command_buffer_avail')) + 1
 				self.set_buffer_sizes(planner_buffer_size, command_buffer_size)
-				self.set_status('Buffer sizes detected')
+				self.set_status('Ready')
 
 		if comm is not self.checked_comm:
 			self.check_compatibility(comm)
@@ -262,7 +296,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 		if self.did_resend and not comm._resendActive:
 			self.did_resend = False
-			self.set_status('Resend over, resuming...')
+			self.set_status(self.activity_status(comm))
 
 		if "ok " in line:
 			matches = ADVANCED_OK.search(line)
@@ -278,8 +312,9 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			inflight_target = self.sd_inflight_target if comm.isStreaming() else self.inflight_target
 			inflight = current_line_number - ok_line_number
 			inflight += comm._clear_to_send.counter # If there's a clear_to_send pending, we need to count it as inflight cause it will be soon
+			planner_queued = max(0, self.planner_buffer_size - 1 - planner_buffer_avail)
+			job_active = comm.isPrinting() or comm.isStreaming()
 
-			should_report = False
 			should_send = False
 
 			# During a resend only stop adding lines (below). Never swallow an ok: Octoprint needs each one to step
@@ -292,16 +327,14 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 					self.set_status('Resend detected, backing off' if self.enabled else 'Resend detected')
 				self.last_cts = monotonic_time() + POST_RESEND_WAIT # Hack to delay before resuming CTS after resend event to give printer some time to breathe
 
-			# detect underruns if printing
-			if not comm.isStreaming():
-				if command_buffer_avail == self.command_buffer_size - 1:
-					self.command_underruns_detected += 1
-
-				if planner_buffer_avail == self.planner_buffer_size - 1:
-					self.planner_underruns_detected += 1
-
-			if (monotonic_time() - self.last_report) > REPORT_INTERVAL:
-				should_report = True
+			# No underrun counters: Marlin moves a line into the planner within milliseconds and sends its ok after,
+			# so B reads BUFSIZE - 1 on nearly every ok unless the planner is full, and P can't read "empty" for a
+			# move because the move is already in the planner. How full the planner stays is what shows starvation.
+			if job_active:
+				self.oks_since_report += 1
+				if not comm.isStreaming():
+					self.planner_queued_sum += planner_queued
+					self.planner_samples += 1
 
 			# The command queue holds BUFSIZE - B lines, the one this ok is for included. Lines sent after those are
 			# in transit or in the printer's serial RX buffer, which ADVANCED_OK doesn't report and which overflows
@@ -325,40 +358,21 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 					self._logger.debug("Detected available command buffer, triggering a send")
 					self.clear_to_sends_triggered += 1
 					self.last_cts = monotonic_time()
-				#should_report = True # no need to update every send. keep updating based only on time to reduce load.
 
-			if should_report:
-				self.send_message("update", {
-					"current_line_number": current_line_number,
-					"acked_line_number": ok_line_number,
-					"inflight": inflight,
-					"planner_buffer_avail": planner_buffer_avail,
-					"command_buffer_avail": command_buffer_avail,
-					"resends_detected": self.resends_detected,
-					"planner_underruns_detected": self.planner_underruns_detected,
-					"command_underruns_detected": self.command_underruns_detected,
-					"cts_triggered": self.clear_to_sends_triggered,
-					"send_queue_size": queue_size,
-				})
-				self._logger.debug("current line: {} ok line: {} buffer avail: {} inflight: {} cts: {} cts_max: {} queue: {}".format(current_line_number, ok_line_number, command_buffer_avail, inflight, comm._clear_to_send.counter, comm._clear_to_send.max, queue_size))
-				self.last_report = monotonic_time()
-				if self.enabled:
-					self.set_status('Active')
-				else:
-					self.set_status('Monitoring')
+			now = monotonic_time()
+			if job_active and now - self.last_report > REPORT_INTERVAL:
+				self.last_update = dict(self.summary_stats(),
+					lines_per_second=int(round(self.oks_since_report / (now - self.last_report))),
+					inflight=inflight,
+					planner_queued=planner_queued,
+				)
+				self.send_message("update", self.last_update)
+				self._logger.debug("current line: %s ok line: %s buffer avail: %s inflight: %s cts: %s cts_max: %s queue: %s",
+					current_line_number, ok_line_number, command_buffer_avail, inflight, comm._clear_to_send.counter, comm._clear_to_send.max, queue_size)
+				self.oks_since_report = 0
+				self.last_report = now
 
 		return line
-
-	##~~ AssetPlugin mixin
-
-	def get_assets(self):
-		# Define your plugin's asset files to automatically include in the
-		# core UI here.
-		return dict(
-			js=["js/buffer-buddy.js"],
-			css=["css/buffer-buddy.css"],
-			less=["less/buffer-buddy.less"]
-		)
 
 	##~~ Softwareupdate hook
 
@@ -389,6 +403,9 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		)
 
 	##~~ TemplatePlugin
+	def is_template_autoescaped(self):
+		return True
+
 	def get_template_configs(self):
 		return [
 				dict(type="sidebar", custom_bindings=False),
