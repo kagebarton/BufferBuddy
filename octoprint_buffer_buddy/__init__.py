@@ -18,7 +18,7 @@ LINE_FRAMING_BYTES = 6 # bytes a line gains on the wire besides its line number:
 # Octoprint internals BufferBuddy relies on. Checked on every new connection, if any are missing BufferBuddy stays inactive
 REQUIRED_COMM_INTERNALS = (
 	"_current_line", "_lastLines", "_clear_to_send", "_send_queue", "_resendActive", "_state", "_currentFile",
-	"STATE_STARTING", "STATE_PRINTING", "job_on_hold", "isPrinting", "isStreaming", "isSdPrinting",
+	"STATE_STARTING", "STATE_PRINTING", "job_on_hold", "isPrinting", "isPaused", "isStreaming", "isSdPrinting",
 	"_send_from_command_queue", "_send_from_job_queue", "_send_from_job",
 )
 REQUIRED_CLEAR_TO_SEND_INTERNALS = ("set", "clear", "max", "counter", "acquire", "release")
@@ -58,6 +58,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		eventManager().subscribe(Events.TRANSFER_DONE, self.on_print_finish)
 		eventManager().subscribe(Events.TRANSFER_FAILED, self.on_print_finish)
 		eventManager().subscribe(Events.PRINT_STARTED, self.on_print_started)
+		eventManager().subscribe(Events.PRINT_PAUSED, self.on_print_paused)
+		eventManager().subscribe(Events.PRINT_RESUMED, self.on_print_resumed)
 		eventManager().subscribe(Events.PRINT_DONE, self.on_print_finish)
 		eventManager().subscribe(Events.PRINT_FAILED, self.on_print_finish)
 
@@ -85,29 +87,57 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.reset_statistics()
 		self.set_state('printing', 'Printing')
 
+	def on_print_paused(self, event, payload):
+		self.set_state('paused', 'Paused')
+
+	def on_print_resumed(self, event, payload):
+		self.set_state('printing', 'Printing')
+
 	def on_print_finish(self, event, payload):
 		if self.last_update is not None:
 			self.last_update.update(self.summary_stats()) # the last report can be up to REPORT_INTERVAL old
-		self.set_state('ready', 'Ready')
+		if self.state == 'disconnected':
+			self.send_plugin_state() # a print that fails by disconnecting reports it after the disconnect
+		else:
+			self.set_state('ready', 'Ready')
 
 	def reset_statistics(self):
 		self.resends_detected = 0
-		self.clear_to_sends_triggered = 0
 		self.did_resend = False
 		self.last_resend_end = None
-		self.planner_queued_sum = 0
-		self.planner_samples = 0
+		# Time weighted averages over the job
+		self.last_sample = None # (time, inflight, planner_queued or None during an upload) of the last ok
+		self.inflight_seconds = self.sampled_seconds = 0
+		self.planner_seconds = self.planner_sampled_seconds = 0
 		self.oks_since_report = 0
 		self.last_report = monotonic_time()
+		self.limits_since_report = {} # what held back the extra line, per ok
 		self.last_update = None # the stats last sent to the sidebar, also served to browsers that load later
 
 	def summary_stats(self):
 		# Stats over the whole job, kept in the sidebar after it ends
 		return {
-			"planner_queued_avg": int(round(float(self.planner_queued_sum) / self.planner_samples)) if self.planner_samples else None,
+			"planner_queued_avg": int(round(self.planner_seconds / self.planner_sampled_seconds)) if self.planner_sampled_seconds else None,
+			"inflight_avg": round(self.inflight_seconds / self.sampled_seconds, 1) if self.sampled_seconds else None,
 			"resends_detected": self.resends_detected,
-			"cts_triggered": self.clear_to_sends_triggered,
 		}
+
+	def sample(self, now, inflight, planner_queued):
+		# An ok's readings hold until the next ok, so weight them by that time, at most REPORT_INTERVAL so a heat-up or
+		# a pause doesn't count as a stretch of one reading
+		if self.last_sample is not None:
+			then, last_inflight, last_planner_queued = self.last_sample
+			seconds = min(now - then, REPORT_INTERVAL)
+			self.inflight_seconds += last_inflight * seconds
+			self.sampled_seconds += seconds
+			if last_planner_queued is not None:
+				self.planner_seconds += last_planner_queued * seconds
+				self.planner_sampled_seconds += seconds
+			# Restart the throughput measurement after a stall, or its first reading would average over the stall
+			if now - then > REPORT_INTERVAL:
+				self.oks_since_report = 0
+				self.last_report = now
+		self.last_sample = (now, inflight, planner_queued)
 
 	def set_buffer_sizes(self, planner_buffer_size, command_buffer_size):
 		self.planner_buffer_size = planner_buffer_size
@@ -168,6 +198,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def activity_status(self, comm):
 		if comm.isStreaming():
 			return 'Uploading to SD'
+		if comm.isPaused():
+			return 'Paused'
 		return 'Printing' if comm.isPrinting() else 'Ready'
 
 	def send_plugin_state(self):
@@ -354,10 +386,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		# so B reads BUFSIZE - 1 on nearly every ok unless the planner is full, and P can't read "empty" for a
 		# move because the move is already in the planner. How full the planner stays is what shows starvation.
 		if job_active:
+			self.sample(monotonic_time(), inflight, None if comm.isStreaming() else planner_queued)
 			self.oks_since_report += 1
-			if not comm.isStreaming():
-				self.planner_queued_sum += planner_queued
-				self.planner_samples += 1
 
 		# The command queue holds BUFSIZE - B lines, the one this ok is for included. Lines sent after those are
 		# in transit or in the printer's serial RX buffer, which ADVANCED_OK doesn't report and which overflows
@@ -370,7 +400,15 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 		# At most one extra line per ok, so inflight climbs to the target over that many oks. Octoprint's monitor
 		# thread sends a line for this ok as well, so the command queue needs room for 2.
-		should_send = command_buffer_avail > 2 and fits_rx_buffer and inflight < self.inflight_target
+		if command_buffer_avail <= 2:
+			limit = 'command_buffer'
+		elif not fits_rx_buffer:
+			limit = 'rx_buffer'
+		elif inflight >= self.inflight_target:
+			limit = 'target'
+		else:
+			limit = None
+		should_send = limit is None
 
 		active = self.enabled and self.streaming_job(comm)
 		if not active:
@@ -383,7 +421,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			if self.fill_send_queue(comm, comm._clear_to_send.counter + 1 + should_send) and should_send:
 				comm._clear_to_send.set()
 				self._logger.debug("Detected available command buffer, triggering a send")
-				self.clear_to_sends_triggered += 1
+			if job_active:
+				self.limits_since_report[limit] = self.limits_since_report.get(limit, 0) + 1
 
 		now = monotonic_time()
 		if job_active and now - self.last_report > REPORT_INTERVAL:
@@ -391,12 +430,15 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				lines_per_second=int(round(self.oks_since_report / (now - self.last_report))),
 				inflight=inflight,
 				planner_queued=planner_queued,
+				# what held inflight back on most oks, None while it was still rising
+				limited_by=max(self.limits_since_report, key=self.limits_since_report.get) if self.limits_since_report else None,
 			)
 			self.send_message("update", self.last_update)
 			self._logger.debug("current line: %s ok line: %s buffer avail: %s inflight: %s cts: %s cts_max: %s queue: %s",
 				current_line_number, ok_line_number, command_buffer_avail, inflight, comm._clear_to_send.counter, comm._clear_to_send.max, queue_size)
 			self.oks_since_report = 0
 			self.last_report = now
+			self.limits_since_report = {}
 
 		return line
 

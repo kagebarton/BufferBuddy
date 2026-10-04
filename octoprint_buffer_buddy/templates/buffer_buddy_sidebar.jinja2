@@ -4,7 +4,7 @@ Status: <strong data-bind="text: status">Starting...</strong> <span class="muted
   <!-- ko if: jobActive -->
   Throughput: <strong><span data-bind="text: linesPerSecond">_</span> lines/s</strong>
   <br />
-  In flight: <strong><span data-bind="text: inflight">_</span><!-- ko if: enabled --> / <span data-bind="text: inflightTarget">_</span> max<!-- /ko --></strong>
+  In flight: <strong><span data-bind="text: inflight">_</span> lines</strong><!-- ko if: enabled() && limitedByText() --> <span class="muted" data-bind="text: limitedByText"></span><!-- /ko -->
   <br />
   <!-- /ko -->
   <!-- ko if: printing -->
@@ -15,12 +15,12 @@ Status: <strong data-bind="text: status">Starting...</strong> <span class="muted
   Planner average: <strong><span data-bind="text: plannerQueuedAvg">_</span> moves</strong>
   <br />
   <!-- /ko -->
-  Resends: <strong data-bind="text: resendsDetected">_</strong>
-  <br />
-  <!-- ko if: enabled -->
-  Extra lines sent: <strong data-bind="text: ctsTriggered">_</strong>
+  <!-- ko if: inflightAvg() !== null -->
+  In flight average: <strong><span data-bind="text: inflightAvg">_</span> lines</strong>
   <br />
   <!-- /ko -->
+  Resends: <strong data-bind="text: resendsDetected">_</strong>
+  <br />
 </div>
 
 <small class="muted">
