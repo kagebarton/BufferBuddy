@@ -14,11 +14,11 @@ RESEND_HISTORY_MARGIN = 5 # lines. Octoprint can only resend lines still in its 
 CLEAR_TO_SEND_HEADROOM = 2 # clear to sends beyond the inflight target: ours plus Octoprint's own for the same ok
 DEFAULT_MIN_CTS_INTERVAL = 0.1 # seconds
 DEFAULT_RX_BUFFER_SIZE = 128 # bytes, Marlin's default RX_BUFFER_SIZE
-ASSUMED_LINE_BYTES = 48 # bytes per line on the wire, "N1234 " and "*123" included, to turn the RX buffer size into lines
+LINE_FRAMING_BYTES = 6 # bytes a line gains on the wire besides its line number: " " after it, "*" and up to 3 checksum digits, "\n"
 
 # Octoprint internals BufferBuddy relies on. Checked on every new connection, if any are missing BufferBuddy stays inactive
 REQUIRED_COMM_INTERNALS = (
-	"_current_line", "_clear_to_send", "_send_queue", "_resendActive", "_state", "_currentFile",
+	"_current_line", "_lastLines", "_clear_to_send", "_send_queue", "_resendActive", "_state", "_currentFile",
 	"STATE_STARTING", "STATE_PRINTING", "job_on_hold", "isPrinting", "isStreaming", "isSdPrinting",
 	"_send_from_command_queue", "_send_from_job_queue", "_send_from_job",
 )
@@ -44,7 +44,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.advanced_ok_detected = False
 
 		self.min_cts_interval = DEFAULT_MIN_CTS_INTERVAL
-		self.rx_buffer_lines = DEFAULT_RX_BUFFER_SIZE // ASSUMED_LINE_BYTES
+		self.rx_buffer_size = DEFAULT_RX_BUFFER_SIZE
 		self.inflight_target = 0
 		self.planner_buffer_size = 0
 		self.command_buffer_size = 0
@@ -145,8 +145,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		# A field left blank reads as None
 		min_cts_interval = self._settings.get_float(["min_cts_interval"], min=0)
 		self.min_cts_interval = DEFAULT_MIN_CTS_INTERVAL if min_cts_interval is None else min_cts_interval
-		rx_buffer_size = self._settings.get_int(["rx_buffer_size"], min=ASSUMED_LINE_BYTES)
-		self.rx_buffer_lines = (DEFAULT_RX_BUFFER_SIZE if rx_buffer_size is None else rx_buffer_size) // ASSUMED_LINE_BYTES
+		rx_buffer_size = self._settings.get_int(["rx_buffer_size"], min=0)
+		self.rx_buffer_size = DEFAULT_RX_BUFFER_SIZE if rx_buffer_size is None else rx_buffer_size
 		# Disabling restores the ok buffer size on the next ok, from the monitor thread, not from here: a web thread
 		# could land between the hook's raise and its sends
 		self.send_plugin_state()
@@ -242,6 +242,26 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			clear_to_send.release()
 		self.raised_comm = None
 		self._logger.info("Restored this connection's ok buffer size to {}".format(original))
+
+	def rx_buffer_bytes(self, comm, ok_line_number, queued):
+		# What the printer's RX buffer would hold once Octoprint's line for this ok and ours are sent: the lines sent
+		# after those in its command queue, then a line for each clear to send pending and the 2 new ones. Those aren't
+		# known yet, so each counts as the longest line in flight. Lines numbered N sit in Octoprint's history at
+		# [N - _current_line]. The send loop can append one between the two reads below, which shifts the sizes by a
+		# line: close enough for an estimate.
+		current_line_number = comm._current_line
+		history = comm._lastLines
+		unacked = min(current_line_number - ok_line_number, len(history)) # the line this ok is for and every later one
+		waiting = longest = 0
+		for back in range(1, unacked + 1):
+			line_number = current_line_number - back
+			size = len(history[-back]) + len(str(line_number)) + 1 + LINE_FRAMING_BYTES
+			longest = max(longest, size)
+			if line_number > ok_line_number + queued:
+				waiting += size
+		if longest == 0:
+			return None # no history to go by
+		return waiting + (comm._clear_to_send.counter + 2) * longest
 
 	def streaming_job(self, comm):
 		# A job Octoprint sends line by line. Outside one the printer may sit on a long command (heating before the
@@ -349,10 +369,11 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		# The command queue holds BUFSIZE - B lines, the one this ok is for included. Lines sent after those are
 		# in transit or in the printer's serial RX buffer, which ADVANCED_OK doesn't report and which overflows
 		# (dropping bytes) if a burst arrives while the printer is busy. So after Octoprint's line for this ok
-		# and ours, everything not yet in the command queue must still fit in the RX buffer: inflight, less the line
-		# this ok is for, plus those 2, less the queued lines.
+		# and ours, everything not yet in the command queue must still fit in the RX buffer. A ring buffer holds one
+		# byte less than its size.
 		queued = self.command_buffer_size - command_buffer_avail - 1
-		fits_rx_buffer = inflight + 1 - queued <= self.rx_buffer_lines
+		rx_buffer_bytes = self.rx_buffer_bytes(comm, ok_line_number, queued)
+		fits_rx_buffer = rx_buffer_bytes is not None and rx_buffer_bytes <= self.rx_buffer_size - 1
 
 		# Octoprint's monitor thread sends a line for this ok as well, so the command queue needs room for 2
 		should_send = (command_buffer_avail > 2 and fits_rx_buffer and inflight < self.inflight_target
