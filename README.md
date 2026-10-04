@@ -38,26 +38,28 @@ There are no underrun counters any more. "Command underruns" counted every `ok` 
 
 ## Firmware settings
 
-- **`RX_BUFFER_SIZE` is the main lever.** Lines the printer hasn't moved into its command queue wait in this buffer, and BufferBuddy only keeps as many there as fit. Marlin's default of 128 bytes holds about 3 typical lines, so on stock firmware the plugin adds little. Set the plugin's "Printer RX buffer size" to your firmware's value: too high and the printer drops bytes and asks for resends, too low and the plugin holds back.
-- **`BUFSIZE`** sets the inflight target (`BUFSIZE - 1`, at most 45). Raising it only helps once the RX buffer is big enough to feed it.
+- **`BUFSIZE` is the main lever.** It sets the inflight target (`BUFSIZE - 1`, at most 45), and lines in flight wait safely in Marlin's command queue. Marlin's default of 4 leaves the plugin almost nothing to work with.
+- **`RX_BUFFER_SIZE`** holds the lines that haven't reached the command queue yet, and BufferBuddy only keeps as many there as fit. Once the planner is full, the command queue holds nearly every line in flight, so a small RX buffer costs little: Marlin's default of 128 bytes did almost as well as 1024 below. Set the plugin's "Printer RX buffer size" to your firmware's value: too high and the printer drops bytes and asks for resends, too low and the plugin holds back.
 - **`BLOCK_BUFFER_SIZE`** is how many moves the planner holds. It's what keeps the printer moving when lines arrive unevenly.
 
 Measured on the Aquila below with a stress test of 18,000 0.3 mm moves at 100 mm/s, which needs 333 lines/s (the moves alone take about 54 s):
 
-| Firmware | Stock OctoPrint | BufferBuddy 0.2.0 |
-|---|---|---|
-| RX 128, BUFSIZE 8 | 238 s | 125 s |
-| RX 1024, BUFSIZE 32 | 238 s | 83 s |
+| Firmware | Stock OctoPrint | BufferBuddy 0.2.0 | This version |
+|---|---|---|---|
+| RX 128, BUFSIZE 8 | 238 s | 125 s | |
+| RX 1024, BUFSIZE 32 | 238 s | 83 s | 78 s |
+| RX 1024, BUFSIZE 32, plugin's RX setting at 128 | | | 77 s |
+
+Homing at the start varies by a few seconds between runs.
 
 ## Known limitations
 
 - OctoPrint considers a print finished when it sends the last line, so "print done" (and anything that runs on it) comes up to `BUFSIZE - 1` lines early, while the printer is still working through them.
 - `ok`s for earlier lines in flight arrive while the printer is busy with a long command like `M190` or `M109`. OctoPrint takes them as the end of that command, so it can log "Communication timeout" around heat-up, and its heat-up time accounting is off.
-- The changes after 0.2.0 were tested on OctoPrint's virtual printer, not yet on real hardware.
 
 ## Tested with
 
-Voxelab Aquila (STM32F103, Marlin 2.1 ProUI fork with `ADVANCED_OK`, `RX_BUFFER_SIZE 1024`, `BUFSIZE 32`, `BLOCK_BUFFER_SIZE 128`, 250000 baud over its USB serial adapter), OctoPrint 1.11.8 on octo4a (Android). A 215,000-line print finished with the planner full on 84% of `ok`s and every resend recovered.
+Voxelab Aquila (STM32F103, Marlin 2.1 ProUI fork with `ADVANCED_OK`, `RX_BUFFER_SIZE 1024`, `BUFSIZE 32`, `BLOCK_BUFFER_SIZE 128`, 250000 baud over its USB serial adapter), OctoPrint 1.11.8 on octo4a (Android). A 215,000-line print finished with the planner full on 84% of `ok`s and every resend recovered. Logging the serial traffic (OctoPrint's `serial.log`) costs octo4a enough CPU to cut the stress test from about 330 to 258 lines/s, which starves the planner, so leave it off unless you're diagnosing something.
 
 ## Setup
 
