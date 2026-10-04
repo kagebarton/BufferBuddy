@@ -12,7 +12,6 @@ REPORT_INTERVAL = 1 # seconds
 RESEND_EPISODE_GAP = 1.0 # seconds. A resend starting this soon after the last one ended is part of the same episode: every line already in flight behind a bad one draws its own resend request
 RESEND_HISTORY_MARGIN = 5 # lines. Octoprint can only resend lines still in its history (serial.lastLineBufferSize, default 50), so keep inflight this far below it
 CLEAR_TO_SEND_HEADROOM = 2 # clear to sends beyond the inflight target: ours plus Octoprint's own for the same ok
-DEFAULT_MIN_CTS_INTERVAL = 0.1 # seconds
 DEFAULT_RX_BUFFER_SIZE = 128 # bytes, Marlin's default RX_BUFFER_SIZE
 LINE_FRAMING_BYTES = 6 # bytes a line gains on the wire besides its line number: " " after it, "*" and up to 3 checksum digits, "\n"
 
@@ -33,7 +32,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	def __init__(self):
 		# Set variables that we may use before we can pull the settings etc
-		self.last_cts = 0
 		self.last_report = 0
 		
 		self.enabled = False
@@ -43,7 +41,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 		self.advanced_ok_detected = False
 
-		self.min_cts_interval = DEFAULT_MIN_CTS_INTERVAL
 		self.rx_buffer_size = DEFAULT_RX_BUFFER_SIZE
 		self.inflight_target = 0
 		self.planner_buffer_size = 0
@@ -132,7 +129,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def get_settings_defaults(self):
 		return dict(
 			enabled=True,
-			min_cts_interval=DEFAULT_MIN_CTS_INTERVAL,
 			rx_buffer_size=DEFAULT_RX_BUFFER_SIZE,
 		)
 
@@ -143,8 +139,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def apply_settings(self):
 		self.enabled = self._settings.get_boolean(["enabled"])
 		# A field left blank reads as None
-		min_cts_interval = self._settings.get_float(["min_cts_interval"], min=0)
-		self.min_cts_interval = DEFAULT_MIN_CTS_INTERVAL if min_cts_interval is None else min_cts_interval
 		rx_buffer_size = self._settings.get_int(["rx_buffer_size"], min=0)
 		self.rx_buffer_size = DEFAULT_RX_BUFFER_SIZE if rx_buffer_size is None else rx_buffer_size
 		# Disabling restores the ok buffer size on the next ok, from the monitor thread, not from here: a web thread
@@ -355,7 +349,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 					self.resends_detected += 1
 				self.did_resend = True
 				self.set_status('Resend detected, backing off' if self.enabled else 'Resend detected')
-			self.last_cts = monotonic_time() # the next extra line waits min_cts_interval after the resend ends
 
 		# No underrun counters: Marlin moves a line into the planner within milliseconds and sends its ok after,
 		# so B reads BUFSIZE - 1 on nearly every ok unless the planner is full, and P can't read "empty" for a
@@ -375,9 +368,9 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		rx_buffer_bytes = self.rx_buffer_bytes(comm, ok_line_number, queued)
 		fits_rx_buffer = rx_buffer_bytes is not None and rx_buffer_bytes <= self.rx_buffer_size - 1
 
-		# Octoprint's monitor thread sends a line for this ok as well, so the command queue needs room for 2
-		should_send = (command_buffer_avail > 2 and fits_rx_buffer and inflight < self.inflight_target
-			and monotonic_time() - self.last_cts > self.min_cts_interval)
+		# At most one extra line per ok, so inflight climbs to the target over that many oks. Octoprint's monitor
+		# thread sends a line for this ok as well, so the command queue needs room for 2.
+		should_send = command_buffer_avail > 2 and fits_rx_buffer and inflight < self.inflight_target
 
 		active = self.enabled and self.streaming_job(comm)
 		if not active:
@@ -391,7 +384,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				comm._clear_to_send.set()
 				self._logger.debug("Detected available command buffer, triggering a send")
 				self.clear_to_sends_triggered += 1
-				self.last_cts = monotonic_time()
 
 		now = monotonic_time()
 		if job_active and now - self.last_report > REPORT_INTERVAL:
