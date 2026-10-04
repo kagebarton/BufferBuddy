@@ -12,19 +12,20 @@ This plugin requires `ADVANCED_OK` to function.
 
 Install it and it works on a stock OctoPrint. There is no `comm.py` to patch and no "ok buffer size" to change:
 
-- When it first sends an extra line on a connection, BufferBuddy raises that connection's "ok buffer size" to its inflight target plus 2. OctoPrint throws away every `ok` over that size that arrives before its send loop catches up, and each one it throws away is a line lost from flight for good. Your saved setting is never changed, and disabling the plugin restores the original value.
+- When it first sends an extra line in a print, BufferBuddy raises that connection's "ok buffer size" to its inflight target plus 2. OctoPrint throws away every `ok` over that size that arrives before its send loop catches up, and each one it throws away is a line lost from flight for good. Outside a print (before it starts, after it ends, while paused, or when disabled) it puts the original value back, so `ok`s for the last lines in flight can't pile up and later release a burst of lines while the printer heats up. Your saved setting is never changed.
 - OctoPrint only refills its send queue when it's empty, so when several `ok`s arrive at once it sends one line where it should send several. BufferBuddy keeps a line queued for every pending clear to send, using the same steps as OctoPrint's `_continue_sending()`. OctoPrint's own code is never patched.
 - Lines waiting in that queue still go out after a pause or cancel (OctoPrint doesn't clear it), so expect a few more short moves than stock OctoPrint, on top of what's already in the printer's buffer.
-- It only sends an extra line if everything the printer hasn't moved into its command queue yet still fits in the printer's serial RX buffer (setting, default 128 bytes = Marlin's `RX_BUFFER_SIZE` default). ADVANCED_OK doesn't report that buffer, and overflowing it drops bytes and causes resends.
+- It only sends an extra line if everything the printer hasn't moved into its command queue yet still fits in the printer's serial RX buffer (setting, default 128 bytes = Marlin's `RX_BUFFER_SIZE` default). It counts the actual bytes of those lines, line numbers and checksums included. ADVANCED_OK doesn't report that buffer, and overflowing it drops bytes and causes resends.
+- It adds at most one line per `ok`, so inflight climbs to its limit over that many `ok`s at the start of a print and after a resend.
 - During a resend it adds no lines and never swallows an `ok`. (The original swallowed them, which can hang a print on Marlin: OctoPrint then repeats a line Marlin has already processed, and Marlin silently ignores it.)
-- On every connection it checks that the OctoPrint internals it relies on still exist. If any are missing, the sidebar shows "Unsupported OctoPrint version" and the plugin stays inactive.
+- On every connection it checks that the OctoPrint internals it relies on still exist. If any are missing, the sidebar shows "Unsupported OctoPrint version" and the plugin stays inactive. If it hits an error while running, it logs it once, hands the connection back to stock OctoPrint and says so in the sidebar until the printer reconnects.
 
 ## Sidebar
 
-- **Status**: Ready, Printing, Uploading to SD, Resend detected and so on. "(monitoring only)" means BufferBuddy is disabled in its settings and only watches.
-- **Throughput**: lines the printer acknowledged per second, over the last second. Shown during a job, along with **In flight**: lines sent but not yet acknowledged, out of the target when enabled. Stock OctoPrint keeps 1 in flight.
-- **Planner**: moves waiting in the printer's planner now, and on average over the print. This is the buffer that keeps the printer moving. When it runs low, Marlin's `SLOWDOWN` slows the print down, and when it empties the printer stops. Higher is better.
-- **Resends**: resend episodes during the print. One lost byte makes the printer reject every line already sent behind it, and each of those asks for its own resend, so resends less than a second apart count as one episode. **Extra lines sent**: lines BufferBuddy added on top of OctoPrint's own (enabled only).
+- **Status**: Ready, Printing, Paused, Uploading to SD, Resend detected and so on. "(monitoring only)" means BufferBuddy is disabled in its settings and only watches.
+- **Throughput**: lines the printer acknowledged per second, over the last second. Shown during a job, along with **In flight**: lines sent but not yet acknowledged. When enabled, it also says what's holding inflight where it is: the RX buffer, the command buffer, or the target (`BUFSIZE - 1`). **In flight average** is over the whole job, and is what the plugin achieves: stock OctoPrint keeps 1.
+- **Planner**: moves waiting in the printer's planner now, and on average over the time of the print. This is the buffer that keeps the printer moving. When it runs low, Marlin's `SLOWDOWN` slows the print down, and when it empties the printer stops. Higher is better.
+- **Resends**: resend episodes during the print. One lost byte makes the printer reject every line already sent behind it, and each of those asks for its own resend, so resends less than a second apart count as one episode.
 
 There are no underrun counters any more. "Command underruns" counted every `ok` where the printer's command queue held nothing behind that line. That happens on nearly every line unless the planner is full, and on every line with stock OctoPrint. "Planner underruns" needed an `ok` reporting an empty planner, which never happens for a move, because Marlin adds the move to the planner before it sends the `ok`.
 
@@ -35,29 +36,28 @@ There are no underrun counters any more. "Command underruns" counted every `ok` 
 - The manual `comm.py` patch and the "ok buffer size" instructions are gone (see above).
 - Update checks point at this fork.
 
-## Recomendations
+## Firmware settings
 
-- Check your buffer size (BUFSIZE) on Marlin. It should be at least half of planner buffer size (BLOCK_BUFFER_SIZE) + 2 for full usage.
-    most of the times, increrasing BLOCK_BUFFER_SIZE on Marlin is already suficient to reduce buffer problems without using the plugin.
-- TX_BUFFER_SIZE needs to be at least 32 for advanced ok. See marlin documentation.
-- RX_BUFFER_SIZE - I'm not sure the parameter here, but I believe its better to have at least 2 time the MAX_CMD_SIZE for two commands on buffer.
-    So at least 192. To be sure use 256 or 512 if you can.
+- **`RX_BUFFER_SIZE` is the main lever.** Lines the printer hasn't moved into its command queue wait in this buffer, and BufferBuddy only keeps as many there as fit. Marlin's default of 128 bytes holds about 3 typical lines, so on stock firmware the plugin adds little. Set the plugin's "Printer RX buffer size" to your firmware's value: too high and the printer drops bytes and asks for resends, too low and the plugin holds back.
+- **`BUFSIZE`** sets the inflight target (`BUFSIZE - 1`, at most 45). Raising it only helps once the RX buffer is big enough to feed it.
+- **`BLOCK_BUFFER_SIZE`** is how many moves the planner holds. It's what keeps the printer moving when lines arrive unevenly.
+
+Measured on the Aquila below with a stress test of 18,000 0.3 mm moves at 100 mm/s, which needs 333 lines/s (the moves alone take about 54 s):
+
+| Firmware | Stock OctoPrint | BufferBuddy 0.2.0 |
+|---|---|---|
+| RX 128, BUFSIZE 8 | 238 s | 125 s |
+| RX 1024, BUFSIZE 32 | 238 s | 83 s |
+
+## Known limitations
+
+- OctoPrint considers a print finished when it sends the last line, so "print done" (and anything that runs on it) comes up to `BUFSIZE - 1` lines early, while the printer is still working through them.
+- `ok`s for earlier lines in flight arrive while the printer is busy with a long command like `M190` or `M109`. OctoPrint takes them as the end of that command, so it can log "Communication timeout" around heat-up, and its heat-up time accounting is off.
+- The changes after 0.2.0 were tested on OctoPrint's virtual printer, not yet on real hardware.
 
 ## Tested with
 
-This plugin has been tested with Marlin bugfix-2.0.x whti the bellow configurations on BTT SRK 2 and Octoprint 1.7.2 with changes decribed above - _continue_sending().
-Marlin config:
-#define BLOCK_BUFFER_SIZE 64
-#define MAX_CMD_SIZE 96
-#define BUFSIZE 64
-#define TX_BUFFER_SIZE 128
-#define RX_BUFFER_SIZE 512
-#define ADVANCED_OK
-#define BAUDRATE 500000
-
-** Important ** Tested using USART connection instead of USB.
-
-** No test was done on resend procedure.
+Voxelab Aquila (STM32F103, Marlin 2.1 ProUI fork with `ADVANCED_OK`, `RX_BUFFER_SIZE 1024`, `BUFSIZE 32`, `BLOCK_BUFFER_SIZE 128`, 250000 baud over its USB serial adapter), OctoPrint 1.11.8 on octo4a (Android). A 215,000-line print finished with the planner full on 84% of `ok`s and every resend recovered.
 
 ## Setup
 
