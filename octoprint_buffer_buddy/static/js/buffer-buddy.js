@@ -82,13 +82,12 @@ $(function() {
                 });
         };
 
-        self.onStartup = self.onUserLoggedIn = self.onUserLoggedOut = self.onEventSettingsUpdated = function() {
-            self.requestData();
-        };
+        // The API needs a logged in user. This also fires on page load when one already is, and saved settings
+        // arrive as a state message.
+        self.onUserLoggedIn = self.requestData;
 
         self.openSettings = function () {
-            $('a#navbar_show_settings').click();
-            $('li#settings_plugin_buffer_buddy_link a').click();
+            self.settingsViewModel.show("settings_plugin_buffer_buddy");
         };
     }
 

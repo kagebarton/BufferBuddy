@@ -3,14 +3,12 @@ from __future__ import absolute_import
 
 import octoprint.plugin
 from octoprint.util import monotonic_time
-import time
 import re
 import flask
 from octoprint.events import eventManager, Events
 
 ADVANCED_OK = re.compile(r"ok (N(?P<line>\d+) )?P(?P<planner_buffer_avail>\d+) B(?P<command_buffer_avail>\d+)")
 REPORT_INTERVAL = 1 # seconds
-POST_RESEND_WAIT = 0 # seconds
 RESEND_EPISODE_GAP = 1.0 # seconds. A resend starting this soon after the last one ended is part of the same episode: every line already in flight behind a bad one draws its own resend request
 RESEND_HISTORY_MARGIN = 5 # lines. Octoprint can only resend lines still in its history (serial.lastLineBufferSize, default 50), so keep inflight this far below it
 CLEAR_TO_SEND_HEADROOM = 2 # clear to sends beyond the inflight target: ours plus Octoprint's own for the same ok
@@ -72,9 +70,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.command_buffer_size = 0
 		self.planner_buffer_size = 0
 		self.advanced_ok_detected = False
-		self.state = 'detecting'
-		self.set_status('Detecting buffer sizes')
-		self.send_plugin_state()
+		self.set_state('detecting', 'Detecting buffer sizes')
 
 	def on_disconnected(self, event, payload):
 		self.command_buffer_size = 0
@@ -82,28 +78,20 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		# The next connection gets a new comm object, built from the saved settings
 		self.checked_comm = None
 		self.raised_comm = None
-		self.state = 'disconnected'
-		self.set_status('Disconnected')
-		self.send_plugin_state()
+		self.set_state('disconnected', 'Disconnected')
 
 	def on_transfer_started(self, event, payload):
 		self.reset_statistics()
-		self.state = 'transferring'
-		self.set_status('Uploading to SD')
-		self.send_plugin_state()
+		self.set_state('transferring', 'Uploading to SD')
 
 	def on_print_started(self, event, payload):
 		self.reset_statistics()
-		self.state = 'printing'
-		self.set_status('Printing')
-		self.send_plugin_state()
+		self.set_state('printing', 'Printing')
 
 	def on_print_finish(self, event, payload):
 		if self.last_update is not None:
 			self.last_update.update(self.summary_stats()) # the last report can be up to REPORT_INTERVAL old
-		self.state = 'ready'
-		self.set_status('Ready')
-		self.send_plugin_state()
+		self.set_state('ready', 'Ready')
 
 	def reset_statistics(self):
 		self.resends_detected = 0
@@ -129,10 +117,9 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.command_buffer_size = command_buffer_size
 		resend_history = self._settings.global_get_int(["serial", "lastLineBufferSize"])
 		self.inflight_target = min(command_buffer_size - 1, resend_history - RESEND_HISTORY_MARGIN)
-		self.state = 'detected'
 		self.advanced_ok_detected = True
 		self._logger.info("Detected planner buffer size as {}, command buffer size as {}, setting inflight_target to {}".format(planner_buffer_size, command_buffer_size, self.inflight_target))
-		self.send_plugin_state()
+		self.set_state('detected', 'Ready')
 
 	##~~ StartupPlugin mixin
 
@@ -168,13 +155,21 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def send_message(self, type, message):
 		self._plugin_manager.send_plugin_message(self._identifier, {"type": type, "message": message})
 
+	def displayed_status(self, message):
+		return message if self.compatible else self.inactive_status
+
 	def set_status(self, message):
-		if not self.compatible:
-			message = self.inactive_status
+		message = self.displayed_status(message)
 		if message == self.status:
 			return
 		self.status = message
 		self.send_message("status", message)
+
+	def set_state(self, state, status):
+		# The full state carries the status as well
+		self.state = state
+		self.status = self.displayed_status(status)
+		self.send_plugin_state()
 
 	def activity_status(self, comm):
 		if comm.isStreaming():
@@ -193,7 +188,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			"status": self.status,
 			"enabled": self.enabled,
 			"advanced_ok_detected": self.advanced_ok_detected,
-			"compatible": self.compatible,
 			"stats": self.last_update,
 		}
 
@@ -203,13 +197,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	def on_api_get(self, request):
 		return flask.jsonify(state=self.plugin_state())
-
-	def get_api_commands(self):
-		return dict(clear=[])
-
-	def on_api_command(self, command, data):
-		# No commands yet
-		return None
 
 	##~~ Octoprint internals
 
@@ -222,8 +209,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.inactive_status = 'Unsupported OctoPrint version, inactive'
 		if missing:
 			self._logger.warning("This Octoprint version lacks internals BufferBuddy needs ({}), staying inactive".format(", ".join(missing)))
-			self.set_status('Unsupported OctoPrint version')
-			self.send_plugin_state()
+			self.set_state(self.state, self.inactive_status)
 
 	def raise_clear_to_send_max(self, comm):
 		# Only on this connection: the saved "ok buffer size" is untouched and the next connection starts from it again.
@@ -284,14 +270,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			pass
 		return comm._send_queue.qsize() >= clear_to_sends
 
-	def send_one_more(self, comm):
-		# This hook runs before Octoprint handles the same ok, so cover the clear to sends already pending,
-		# the one Octoprint adds for this ok, and ours
-		if not self.fill_send_queue(comm, comm._clear_to_send.counter + 2):
-			return False # nothing left to send
-		comm._clear_to_send.set()
-		return True
-
 	##~~ Core logic
 
 	def gcode_received(self, comm, line, *args, **kwargs):
@@ -302,8 +280,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			self._logger.exception("BufferBuddy failed handling {!r}, staying inactive until the printer reconnects".format(line))
 			self.compatible = False
 			self.inactive_status = 'Error, inactive until reconnect (see octoprint.log)'
-			self.set_status(self.inactive_status)
-			self.send_plugin_state()
+			self.set_state(self.state, self.inactive_status)
 			try:
 				self.restore_clear_to_send_max(comm)
 			except Exception:
@@ -312,20 +289,20 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	# Assumptions: This is never called concurrently, and we are free to access anything in comm
 	# FIXME: Octoprint considers the job finished when the last line is sent, even when there are lines inflight
-	def handle_received(self, comm, line):				
+	def handle_received(self, comm, line):
+		matches = ADVANCED_OK.search(line) if "ok " in line else None
+		ok_line_number = None if matches is None or matches.group('line') is None else int(matches.group('line'))
+
 		# Figure out the buffer sizes, for the inflight target and the planner fill, from the response to N0 M110 N0
 		# Important: This runs before on_after_startup
-		if self.planner_buffer_size == 0 and "ok N0 " in line:
-			matches = ADVANCED_OK.search(line)
-			if matches:
-				# ok output always returns BLOCK_BUFFER_SIZE - 1 due to 
-				#     FORCE_INLINE static uint8_t moves_free() { return BLOCK_BUFFER_SIZE - 1 - movesplanned(); }
-				# for whatever reason
-				planner_buffer_size = int(matches.group('planner_buffer_avail')) + 1
-				# We add +1 here as ok will always return BUFSIZE-1 as we've just sent it a command
-				command_buffer_size = int(matches.group('command_buffer_avail')) + 1
-				self.set_buffer_sizes(planner_buffer_size, command_buffer_size)
-				self.set_status('Ready')
+		if self.planner_buffer_size == 0 and ok_line_number == 0:
+			# ok output always returns BLOCK_BUFFER_SIZE - 1 due to 
+			#     FORCE_INLINE static uint8_t moves_free() { return BLOCK_BUFFER_SIZE - 1 - movesplanned(); }
+			# for whatever reason
+			planner_buffer_size = int(matches.group('planner_buffer_avail')) + 1
+			# We add +1 here as ok will always return BUFSIZE-1 as we've just sent it a command
+			command_buffer_size = int(matches.group('command_buffer_avail')) + 1
+			self.set_buffer_sizes(planner_buffer_size, command_buffer_size)
 
 		if comm is not self.checked_comm:
 			self.check_compatibility(comm)
@@ -337,83 +314,76 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			self.last_resend_end = monotonic_time()
 			self.set_status(self.activity_status(comm))
 
-		if "ok " in line:
-			matches = ADVANCED_OK.search(line)
+		if ok_line_number is None:
+			return line
 
-			if matches is None or matches.group('line') is None:
-				return line
-				
-			ok_line_number = int(matches.group('line'))
-			current_line_number = comm._current_line
-			command_buffer_avail = int(matches.group('command_buffer_avail'))
-			planner_buffer_avail = int(matches.group('planner_buffer_avail'))
-			queue_size = comm._send_queue.qsize()
-			inflight = current_line_number - ok_line_number
-			inflight += comm._clear_to_send.counter # If there's a clear_to_send pending, we need to count it as inflight cause it will be soon
-			planner_queued = max(0, self.planner_buffer_size - 1 - planner_buffer_avail)
-			job_active = comm.isPrinting() or comm.isStreaming()
+		current_line_number = comm._current_line
+		command_buffer_avail = int(matches.group('command_buffer_avail'))
+		planner_buffer_avail = int(matches.group('planner_buffer_avail'))
+		queue_size = comm._send_queue.qsize()
+		inflight = current_line_number - ok_line_number
+		inflight += comm._clear_to_send.counter # If there's a clear_to_send pending, we need to count it as inflight cause it will be soon
+		planner_queued = max(0, self.planner_buffer_size - 1 - planner_buffer_avail)
+		job_active = comm.isPrinting() or comm.isStreaming()
 
-			should_send = False
+		# During a resend only stop adding lines (below). Never swallow an ok: Octoprint needs each one to step
+		# through the lines it resends, and if it times out instead, the line it repeats gets no reply at all,
+		# because Marlin silently drops a line number it has already processed. The print then hangs.
+		if comm._resendActive:
+			if not self.did_resend:
+				if self.last_resend_end is None or monotonic_time() - self.last_resend_end > RESEND_EPISODE_GAP:
+					self.resends_detected += 1
+				self.did_resend = True
+				self.set_status('Resend detected, backing off' if self.enabled else 'Resend detected')
+			self.last_cts = monotonic_time() # the next extra line waits min_cts_interval after the resend ends
 
-			# During a resend only stop adding lines (below). Never swallow an ok: Octoprint needs each one to step
-			# through the lines it resends, and if it times out instead, the line it repeats gets no reply at all,
-			# because Marlin silently drops a line number it has already processed. The print then hangs.
-			if comm._resendActive:
-				if not self.did_resend:
-					if self.last_resend_end is None or monotonic_time() - self.last_resend_end > RESEND_EPISODE_GAP:
-						self.resends_detected += 1
-					self.did_resend = True
-					self.set_status('Resend detected, backing off' if self.enabled else 'Resend detected')
-				self.last_cts = monotonic_time() + POST_RESEND_WAIT # Hack to delay before resuming CTS after resend event to give printer some time to breathe
+		# No underrun counters: Marlin moves a line into the planner within milliseconds and sends its ok after,
+		# so B reads BUFSIZE - 1 on nearly every ok unless the planner is full, and P can't read "empty" for a
+		# move because the move is already in the planner. How full the planner stays is what shows starvation.
+		if job_active:
+			self.oks_since_report += 1
+			if not comm.isStreaming():
+				self.planner_queued_sum += planner_queued
+				self.planner_samples += 1
 
-			# No underrun counters: Marlin moves a line into the planner within milliseconds and sends its ok after,
-			# so B reads BUFSIZE - 1 on nearly every ok unless the planner is full, and P can't read "empty" for a
-			# move because the move is already in the planner. How full the planner stays is what shows starvation.
-			if job_active:
-				self.oks_since_report += 1
-				if not comm.isStreaming():
-					self.planner_queued_sum += planner_queued
-					self.planner_samples += 1
+		# The command queue holds BUFSIZE - B lines, the one this ok is for included. Lines sent after those are
+		# in transit or in the printer's serial RX buffer, which ADVANCED_OK doesn't report and which overflows
+		# (dropping bytes) if a burst arrives while the printer is busy. So after Octoprint's line for this ok
+		# and ours, everything not yet in the command queue must still fit in the RX buffer: inflight, less the line
+		# this ok is for, plus those 2, less the queued lines.
+		queued = self.command_buffer_size - command_buffer_avail - 1
+		fits_rx_buffer = inflight + 1 - queued <= self.rx_buffer_lines
 
-			# The command queue holds BUFSIZE - B lines, the one this ok is for included. Lines sent after those are
-			# in transit or in the printer's serial RX buffer, which ADVANCED_OK doesn't report and which overflows
-			# (dropping bytes) if a burst arrives while the printer is busy. So after Octoprint's line for this ok
-			# and ours, everything not yet in the command queue must still fit in the RX buffer.
-			unacked = current_line_number - 1 - ok_line_number + comm._clear_to_send.counter
-			queued = self.command_buffer_size - command_buffer_avail - 1
-			fits_rx_buffer = unacked + 2 - queued <= self.rx_buffer_lines
+		# Octoprint's monitor thread sends a line for this ok as well, so the command queue needs room for 2
+		should_send = (command_buffer_avail > 2 and fits_rx_buffer and inflight < self.inflight_target
+			and monotonic_time() - self.last_cts > self.min_cts_interval)
 
-			if command_buffer_avail > 2 and fits_rx_buffer: # As we are going to send, and _monitor thread of Octoprint will also send due to OK received, we need to have at leat 2 spots.
-				if inflight < self.inflight_target and (monotonic_time() - self.last_cts) > self.min_cts_interval:
-					should_send = True
-
-			active = self.enabled and self.streaming_job(comm)
-			if not active:
-				self.restore_clear_to_send_max(comm)
-
-			if active and not comm._resendActive:
-				# A line for each clear to send pending, plus the one Octoprint adds for this ok
-				self.fill_send_queue(comm, comm._clear_to_send.counter + 1)
-
-			if should_send and active and not comm._resendActive:
+		active = self.enabled and self.streaming_job(comm)
+		if not active:
+			self.restore_clear_to_send_max(comm)
+		elif not comm._resendActive:
+			if should_send:
 				self.raise_clear_to_send_max(comm)
-				if self.send_one_more(comm):
-					self._logger.debug("Detected available command buffer, triggering a send")
-					self.clear_to_sends_triggered += 1
-					self.last_cts = monotonic_time()
+			# This hook runs before Octoprint handles the same ok, so queue a line for each clear to send pending,
+			# the one Octoprint adds for this ok, and ours
+			if self.fill_send_queue(comm, comm._clear_to_send.counter + 1 + should_send) and should_send:
+				comm._clear_to_send.set()
+				self._logger.debug("Detected available command buffer, triggering a send")
+				self.clear_to_sends_triggered += 1
+				self.last_cts = monotonic_time()
 
-			now = monotonic_time()
-			if job_active and now - self.last_report > REPORT_INTERVAL:
-				self.last_update = dict(self.summary_stats(),
-					lines_per_second=int(round(self.oks_since_report / (now - self.last_report))),
-					inflight=inflight,
-					planner_queued=planner_queued,
-				)
-				self.send_message("update", self.last_update)
-				self._logger.debug("current line: %s ok line: %s buffer avail: %s inflight: %s cts: %s cts_max: %s queue: %s",
-					current_line_number, ok_line_number, command_buffer_avail, inflight, comm._clear_to_send.counter, comm._clear_to_send.max, queue_size)
-				self.oks_since_report = 0
-				self.last_report = now
+		now = monotonic_time()
+		if job_active and now - self.last_report > REPORT_INTERVAL:
+			self.last_update = dict(self.summary_stats(),
+				lines_per_second=int(round(self.oks_since_report / (now - self.last_report))),
+				inflight=inflight,
+				planner_queued=planner_queued,
+			)
+			self.send_message("update", self.last_update)
+			self._logger.debug("current line: %s ok line: %s buffer avail: %s inflight: %s cts: %s cts_max: %s queue: %s",
+				current_line_number, ok_line_number, command_buffer_avail, inflight, comm._clear_to_send.counter, comm._clear_to_send.max, queue_size)
+			self.oks_since_report = 0
+			self.last_report = now
 
 		return line
 
