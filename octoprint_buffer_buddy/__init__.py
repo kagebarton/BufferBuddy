@@ -14,6 +14,7 @@ POST_RESEND_WAIT = 0 # seconds
 RESEND_EPISODE_GAP = 1.0 # seconds. A resend starting this soon after the last one ended is part of the same episode: every line already in flight behind a bad one draws its own resend request
 RESEND_HISTORY_MARGIN = 5 # lines. Octoprint can only resend lines still in its history (serial.lastLineBufferSize, default 50), so keep inflight this far below it
 CLEAR_TO_SEND_HEADROOM = 2 # clear to sends beyond the inflight target: ours plus Octoprint's own for the same ok
+DEFAULT_MIN_CTS_INTERVAL = 0.1 # seconds
 DEFAULT_RX_BUFFER_SIZE = 128 # bytes, Marlin's default RX_BUFFER_SIZE
 ASSUMED_LINE_BYTES = 48 # bytes per line on the wire, "N1234 " and "*123" included, to turn the RX buffer size into lines
 
@@ -44,13 +45,14 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 		self.advanced_ok_detected = False
 
-		self.min_cts_interval = 1.0
+		self.min_cts_interval = DEFAULT_MIN_CTS_INTERVAL
 		self.rx_buffer_lines = DEFAULT_RX_BUFFER_SIZE // ASSUMED_LINE_BYTES
 		self.inflight_target = 0
 		self.planner_buffer_size = 0
 		self.command_buffer_size = 0
 
-		self.compatible = True
+		self.compatible = True # False stops the hook for the rest of this connection
+		self.inactive_status = None # why, shown as the status
 		self.checked_comm = None # comm object the compatibility check last ran on, Octoprint makes a new one per connection
 		self.raised_comm = None # comm object whose clear to send max we raised
 		self.original_clear_to_send_max = None
@@ -143,8 +145,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def get_settings_defaults(self):
 		return dict(
 			enabled=True,
-			min_cts_interval=0.1,
-			sd_inflight_target=4,
+			min_cts_interval=DEFAULT_MIN_CTS_INTERVAL,
 			rx_buffer_size=DEFAULT_RX_BUFFER_SIZE,
 		)
 
@@ -154,9 +155,11 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	def apply_settings(self):
 		self.enabled = self._settings.get_boolean(["enabled"])
-		self.min_cts_interval = self._settings.get_float(["min_cts_interval"])
-		self.sd_inflight_target = self._settings.get_int(["sd_inflight_target"])
-		self.rx_buffer_lines = max(1, self._settings.get_int(["rx_buffer_size"]) // ASSUMED_LINE_BYTES)
+		# A field left blank reads as None
+		min_cts_interval = self._settings.get_float(["min_cts_interval"], min=0)
+		self.min_cts_interval = DEFAULT_MIN_CTS_INTERVAL if min_cts_interval is None else min_cts_interval
+		rx_buffer_size = self._settings.get_int(["rx_buffer_size"], min=ASSUMED_LINE_BYTES)
+		self.rx_buffer_lines = (DEFAULT_RX_BUFFER_SIZE if rx_buffer_size is None else rx_buffer_size) // ASSUMED_LINE_BYTES
 		# Disabling restores the ok buffer size on the next ok, from the monitor thread, not from here: a web thread
 		# could land between the hook's raise and its sends
 		self.send_plugin_state()
@@ -167,7 +170,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	def set_status(self, message):
 		if not self.compatible:
-			message = 'Unsupported OctoPrint version, inactive'
+			message = self.inactive_status
 		if message == self.status:
 			return
 		self.status = message
@@ -216,6 +219,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		if not missing:
 			missing = ["_clear_to_send." + name for name in REQUIRED_CLEAR_TO_SEND_INTERNALS if not hasattr(comm._clear_to_send, name)]
 		self.compatible = not missing
+		self.inactive_status = 'Unsupported OctoPrint version, inactive'
 		if missing:
 			self._logger.warning("This Octoprint version lacks internals BufferBuddy needs ({}), staying inactive".format(", ".join(missing)))
 			self.set_status('Unsupported OctoPrint version')
@@ -226,7 +230,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		# Octoprint caps its pending clear to sends at this size and every ok adds one, so whenever its send loop falls
 		# behind, the ones over the cap are thrown away and lines drop out of flight for good. Leave room for all of them.
 		clear_to_send = comm._clear_to_send
-		wanted = max(self.inflight_target, self.sd_inflight_target) + CLEAR_TO_SEND_HEADROOM
+		wanted = self.inflight_target + CLEAR_TO_SEND_HEADROOM
 		if clear_to_send.max is None or clear_to_send.max >= wanted:
 			return
 		if self.raised_comm is not comm:
@@ -290,9 +294,25 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	##~~ Core logic
 
+	def gcode_received(self, comm, line, *args, **kwargs):
+		try:
+			return self.handle_received(comm, line)
+		except Exception:
+			# Octoprint would log this and carry on, once per ok. Stop instead, and leave this connection to stock Octoprint.
+			self._logger.exception("BufferBuddy failed handling {!r}, staying inactive until the printer reconnects".format(line))
+			self.compatible = False
+			self.inactive_status = 'Error, inactive until reconnect (see octoprint.log)'
+			self.set_status(self.inactive_status)
+			self.send_plugin_state()
+			try:
+				self.restore_clear_to_send_max(comm)
+			except Exception:
+				self._logger.exception("Couldn't restore this connection's ok buffer size")
+			return line
+
 	# Assumptions: This is never called concurrently, and we are free to access anything in comm
 	# FIXME: Octoprint considers the job finished when the last line is sent, even when there are lines inflight
-	def gcode_received(self, comm, line, *args, **kwargs):				
+	def handle_received(self, comm, line):				
 		# Figure out the buffer sizes, for the inflight target and the planner fill, from the response to N0 M110 N0
 		# Important: This runs before on_after_startup
 		if self.planner_buffer_size == 0 and "ok N0 " in line:
@@ -328,7 +348,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			command_buffer_avail = int(matches.group('command_buffer_avail'))
 			planner_buffer_avail = int(matches.group('planner_buffer_avail'))
 			queue_size = comm._send_queue.qsize()
-			inflight_target = self.sd_inflight_target if comm.isStreaming() else self.inflight_target
 			inflight = current_line_number - ok_line_number
 			inflight += comm._clear_to_send.counter # If there's a clear_to_send pending, we need to count it as inflight cause it will be soon
 			planner_queued = max(0, self.planner_buffer_size - 1 - planner_buffer_avail)
@@ -365,7 +384,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			fits_rx_buffer = unacked + 2 - queued <= self.rx_buffer_lines
 
 			if command_buffer_avail > 2 and fits_rx_buffer: # As we are going to send, and _monitor thread of Octoprint will also send due to OK received, we need to have at leat 2 spots.
-				if inflight < inflight_target and (monotonic_time() - self.last_cts) > self.min_cts_interval:
+				if inflight < self.inflight_target and (monotonic_time() - self.last_cts) > self.min_cts_interval:
 					should_send = True
 
 			active = self.enabled and self.streaming_job(comm)
