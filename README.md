@@ -44,7 +44,7 @@ There are no underrun counters any more. "Command underruns" counted every `ok` 
 
 Measured on the Aquila below with a stress test of 18,000 0.3 mm moves at 100 mm/s, which needs 333 lines/s (the moves alone take about 54 s):
 
-| Firmware | Stock OctoPrint | BufferBuddy 0.2.0 | This version |
+| Firmware | Stock OctoPrint | BufferBuddy 0.2.0 | BufferBuddy 0.3.0 |
 |---|---|---|---|
 | RX 128, BUFSIZE 8 | 238 s | 125 s | |
 | RX 1024, BUFSIZE 32 | 238 s | 83 s | 78 s |
@@ -65,5 +65,5 @@ Voxelab Aquila (STM32F103, Marlin 2.1 ProUI fork with `ADVANCED_OK`, `RX_BUFFER_
 
 This fork is not on the plugin repository
 Install from plugin Manager using the link bellow:
-https://github.com/kagebarton/BufferBuddy/archive/0.2.0.zip
+https://github.com/kagebarton/BufferBuddy/archive/0.3.0.zip
 
