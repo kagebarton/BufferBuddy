@@ -23,7 +23,7 @@ REQUIRED_COMM_INTERNALS = (
 	"STATE_STARTING", "STATE_PRINTING", "job_on_hold", "isPrinting", "isStreaming", "isSdPrinting",
 	"_send_from_command_queue", "_send_from_job_queue", "_send_from_job",
 )
-REQUIRED_CLEAR_TO_SEND_INTERNALS = ("set", "max", "counter")
+REQUIRED_CLEAR_TO_SEND_INTERNALS = ("set", "clear", "max", "counter", "acquire", "release")
 
 class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 						octoprint.plugin.AssetPlugin,
@@ -157,8 +157,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.min_cts_interval = self._settings.get_float(["min_cts_interval"])
 		self.sd_inflight_target = self._settings.get_int(["sd_inflight_target"])
 		self.rx_buffer_lines = max(1, self._settings.get_int(["rx_buffer_size"]) // ASSUMED_LINE_BYTES)
-		if not self.enabled:
-			self.restore_clear_to_send_max()
+		# Disabling restores the ok buffer size on the next ok, from the monitor thread, not from here: a web thread
+		# could land between the hook's raise and its sends
 		self.send_plugin_state()
 
 	##~~ Frontend stuff
@@ -235,13 +235,29 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		clear_to_send.max = wanted
 		self._logger.info("Raised this connection's ok buffer size from {} to {}".format(self.original_clear_to_send_max, wanted))
 
-	def restore_clear_to_send_max(self):
-		comm = self.raised_comm
-		if comm is None:
+	def restore_clear_to_send_max(self, comm):
+		if self.raised_comm is not comm:
 			return
-		comm._clear_to_send.max = self.original_clear_to_send_max
+		clear_to_send = comm._clear_to_send
+		original = self.original_clear_to_send_max
+		clear_to_send.acquire()
+		try:
+			clear_to_send.max = original
+			# The counter only drops to the new max on its next set or clear, and Octoprint's send loop would use the
+			# surplus first. A clear then a set clamps it now, and is a no-op when it's already within the max.
+			if clear_to_send.counter > original:
+				clear_to_send.clear()
+				clear_to_send.set()
+		finally:
+			clear_to_send.release()
 		self.raised_comm = None
-		self._logger.info("Restored this connection's ok buffer size to {}".format(self.original_clear_to_send_max))
+		self._logger.info("Restored this connection's ok buffer size to {}".format(original))
+
+	def streaming_job(self, comm):
+		# A job Octoprint sends line by line. Outside one the printer may sit on a long command (heating before the
+		# next print starts, a pause) while the oks for the last lines in flight bank clear to sends, which Octoprint's
+		# send loop would then spend back to back on whatever it sends next.
+		return comm._state in (comm.STATE_STARTING, comm.STATE_PRINTING) and not comm.isSdPrinting()
 
 	def queue_next_line(self, comm):
 		# One pass of Octoprint's _continue_sending(), minus its "only refill an empty send queue" guard
@@ -352,11 +368,15 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				if inflight < inflight_target and (monotonic_time() - self.last_cts) > self.min_cts_interval:
 					should_send = True
 
-			if self.enabled and not comm._resendActive:
+			active = self.enabled and self.streaming_job(comm)
+			if not active:
+				self.restore_clear_to_send_max(comm)
+
+			if active and not comm._resendActive:
 				# A line for each clear to send pending, plus the one Octoprint adds for this ok
 				self.fill_send_queue(comm, comm._clear_to_send.counter + 1)
 
-			if should_send and self.enabled and not comm._resendActive:
+			if should_send and active and not comm._resendActive:
 				self.raise_clear_to_send_max(comm)
 				if self.send_one_more(comm):
 					self._logger.debug("Detected available command buffer, triggering a send")
