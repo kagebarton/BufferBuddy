@@ -58,6 +58,8 @@ Homing at the start varies by a few seconds between runs.
 - OctoPrint considers a print finished when it sends the last line, so "print done" (and anything that runs on it) comes up to `BUFSIZE - 1` lines early, while the printer is still working through them.
 - `ok`s for earlier lines in flight arrive while the printer is busy with a long command like `M190` or `M109`. OctoPrint takes them as the end of that command, so it can log "Communication timeout" around heat-up, and its heat-up time accounting is off.
 
+- **octo4a:** stock octo4a can start two pty reader threads at launch (a race), and each does its own USB write, so adjacent lines arrive at the printer swapped. OctoPrint sees this as "Line Number is not Last Line Number+1" resend requests. BufferBuddy sends lines in bursts, so it triggers this more often than stock OctoPrint does. Every resend recovers, but expect the noise. The fix is the `fix-double-pty-thread` branch of [kagebarton/octo4a](https://github.com/kagebarton/octo4a). To check whether you're affected, see whether octo4a has two threads reading `/dev/ptmx`.
+
 ## Tested with
 
 Voxelab Aquila (STM32F103, Marlin 2.1 ProUI fork with `ADVANCED_OK`, `RX_BUFFER_SIZE 1024`, `BUFSIZE 32`, `BLOCK_BUFFER_SIZE 128`, 250000 baud over its USB serial adapter), OctoPrint 1.11.8 on octo4a (Android). A 215,000-line print finished with the planner full on 84% of `ok`s and every resend recovered. Logging the serial traffic (OctoPrint's `serial.log`) costs octo4a enough CPU to cut the stress test from about 330 to 258 lines/s, which starves the planner, so leave it off unless you're diagnosing something.
@@ -66,5 +68,5 @@ Voxelab Aquila (STM32F103, Marlin 2.1 ProUI fork with `ADVANCED_OK`, `RX_BUFFER_
 
 This fork is not on the plugin repository
 Install from plugin Manager using the link bellow:
-https://github.com/kagebarton/BufferBuddy/archive/0.3.0.zip
+https://github.com/kagebarton/BufferBuddy/archive/0.3.1.zip
 
