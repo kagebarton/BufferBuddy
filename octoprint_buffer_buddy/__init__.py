@@ -6,6 +6,7 @@ from octoprint.util import monotonic_time
 import re
 import flask
 from octoprint.events import eventManager, Events
+from octoprint.util.comm import parse_resend_line
 
 ADVANCED_OK = re.compile(r"ok (N(?P<line>\d+) )?P(?P<planner_buffer_avail>\d+) B(?P<command_buffer_avail>\d+)")
 REPORT_INTERVAL = 1 # seconds
@@ -17,7 +18,7 @@ LINE_FRAMING_BYTES = 6 # bytes a line gains on the wire besides its line number:
 
 # Octoprint internals BufferBuddy relies on. Checked on every new connection, if any are missing BufferBuddy stays inactive
 REQUIRED_COMM_INTERNALS = (
-	"_current_line", "_lastLines", "_clear_to_send", "_send_queue", "_resendActive", "_state", "_currentFile",
+	"_current_line", "_lastLines", "_clear_to_send", "_send_queue", "_resendActive", "_resendDelta", "_state", "_currentFile",
 	"STATE_STARTING", "STATE_PRINTING", "job_on_hold", "isPrinting", "isPaused", "isStreaming", "isSdPrinting",
 	"_send_from_command_queue", "_send_from_job_queue", "_send_from_job",
 )
@@ -333,6 +334,17 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				self._logger.exception("Couldn't restore this connection's ok buffer size")
 			return line
 
+	def is_stale_resend_request(self, comm, line):
+		# A request for the line Octoprint sends next means the printer has every line sent so far: it comes from a
+		# line still in flight behind one that went wrong. Octoprint ignores it unless a resend is under way, and then
+		# it sets the resend to 0 lines back, which sends the oldest line in its history numbered as the next one: a
+		# valid line with the wrong move in it. Lines in flight behind a bad one bring a request each, so with many in
+		# flight that happens.
+		lower_line = line.lower()
+		if not (lower_line.startswith("resend") or lower_line.startswith("rs")):
+			return False
+		return comm._resendDelta is not None and parse_resend_line(line) == comm._current_line
+
 	# Assumptions: This is never called concurrently, and we are free to access anything in comm
 	# FIXME: Octoprint considers the job finished when the last line is sent, even when there are lines inflight
 	def handle_received(self, comm, line):
@@ -354,6 +366,10 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			self.check_compatibility(comm)
 		if not self.compatible:
 			return line
+
+		if self.enabled and self.is_stale_resend_request(comm, line):
+			self._logger.info("Ignoring {!r}: Octoprint hasn't sent line {} yet and would resend the wrong line under its number".format(line.strip(), comm._current_line))
+			return "echo:BufferBuddy ignored a stale request: " + line.strip()
 
 		if self.did_resend and not comm._resendActive:
 			self.did_resend = False
