@@ -46,7 +46,7 @@ $(function() {
             return self.state() === 'printing';
         });
 
-        self.setStats = function (stats) {
+        self.setStats = function (stats, receivedAt) {
             self.hasStats(!!stats);
             if (!stats) {
                 return;
@@ -58,15 +58,17 @@ $(function() {
             self.inflightAvg(stats.inflight_avg === undefined ? null : stats.inflight_avg); // not in stats kept from 0.2.0
             self.resendsDetected(stats.resends_detected);
             self.limitedBy(stats.limited_by);
-            self.lastStatsAt = Date.now();
+            self.lastStatsAt = receivedAt;
+            self.zeroStaleThroughput();
         };
 
         // Stats only arrive with oks, so while the printer sits on a long command (heating) nothing updates them
-        setInterval(function () {
+        self.zeroStaleThroughput = function () {
             if (self.jobActive() && Date.now() - self.lastStatsAt > 3000) {
                 self.linesPerSecond(0);
             }
-        }, 1000);
+        };
+        setInterval(self.zeroStaleThroughput, 1000);
 
         self.setState = function (config) {
             self.status(config.status);
@@ -76,7 +78,8 @@ $(function() {
             self.plannerBufferSize(config.planner_buffer_size);
             self.commandBufferSize(config.command_buffer_size);
             self.inflightTarget(config.inflight_target);
-            self.setStats(config.stats);
+            // A state message resends the last stats, which may be old
+            self.setStats(config.stats, Date.now() - 1000 * (config.stats_age || 0));
         };
 
         self.onDataUpdaterPluginMessage = function (plugin, data) {
@@ -85,7 +88,7 @@ $(function() {
             }
 
             if (data.type === 'update') {
-                self.setStats(data.message);
+                self.setStats(data.message, Date.now());
             } else if (data.type === 'status') {
                 self.status(data.message);
             } else if (data.type === 'state') {

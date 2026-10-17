@@ -14,6 +14,7 @@ RESEND_EPISODE_GAP = 1.0 # seconds. A resend starting this soon after the last o
 RESEND_HISTORY_MARGIN = 5 # lines. Octoprint can only resend lines still in its history (serial.lastLineBufferSize, default 50), so keep inflight this far below it
 CLEAR_TO_SEND_HEADROOM = 2 # clear to sends beyond the inflight target: ours plus Octoprint's own for the same ok
 DEFAULT_RX_BUFFER_SIZE = 128 # bytes, Marlin's default RX_BUFFER_SIZE
+MIN_RX_BUFFER_SIZE = 48 # bytes, as on the settings page. Below a line's worth every extra line would be held back
 LINE_FRAMING_BYTES = 6 # bytes a line gains on the wire besides its line number: " " after it, "*" and up to 3 checksum digits, "\n"
 
 # Octoprint internals BufferBuddy relies on. Checked on every new connection, if any are missing BufferBuddy stays inactive
@@ -39,6 +40,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 		self.state = 'initialising'
 		self.status = 'Not connected'
+		self.active_status = self.status # the status shown while compatible
 
 		self.advanced_ok_detected = False
 
@@ -114,6 +116,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.last_report = monotonic_time()
 		self.limits_since_report = {} # what held back the extra line, per ok
 		self.last_update = None # the stats last sent to the sidebar, also served to browsers that load later
+		self.last_update_at = None # when, so a browser that gets them later doesn't take them for new
 
 	def summary_stats(self):
 		# Stats over the whole job, kept in the sidebar after it ends
@@ -170,7 +173,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def apply_settings(self):
 		self.enabled = self._settings.get_boolean(["enabled"])
 		# A field left blank reads as None
-		rx_buffer_size = self._settings.get_int(["rx_buffer_size"], min=0)
+		rx_buffer_size = self._settings.get_int(["rx_buffer_size"], min=MIN_RX_BUFFER_SIZE)
 		self.rx_buffer_size = DEFAULT_RX_BUFFER_SIZE if rx_buffer_size is None else rx_buffer_size
 		# Disabling restores the ok buffer size on the next ok, from the monitor thread, not from here: a web thread
 		# could land between the hook's raise and its sends
@@ -184,6 +187,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		return message if self.compatible else self.inactive_status
 
 	def set_status(self, message):
+		self.active_status = message
 		message = self.displayed_status(message)
 		if message == self.status:
 			return
@@ -193,8 +197,13 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 	def set_state(self, state, status):
 		# The full state carries the status as well
 		self.state = state
+		self.active_status = status
 		self.status = self.displayed_status(status)
 		self.send_plugin_state()
+
+	def refresh_status(self):
+		# After compatible changes: the inactive status, or back to the one it covered
+		self.set_state(self.state, self.active_status)
 
 	def activity_status(self, comm):
 		if comm.isStreaming():
@@ -216,6 +225,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			"enabled": self.enabled,
 			"advanced_ok_detected": self.advanced_ok_detected,
 			"stats": self.last_update,
+			"stats_age": None if self.last_update_at is None else monotonic_time() - self.last_update_at,
 		}
 
 	def is_api_protected(self):
@@ -229,6 +239,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 
 	def check_compatibility(self, comm):
 		self.checked_comm = comm
+		was_compatible = self.compatible
 		missing = [name for name in REQUIRED_COMM_INTERNALS if not hasattr(comm, name)]
 		if not missing:
 			missing = ["_clear_to_send." + name for name in REQUIRED_CLEAR_TO_SEND_INTERNALS if not hasattr(comm._clear_to_send, name)]
@@ -236,7 +247,8 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		self.inactive_status = 'Unsupported OctoPrint version, inactive'
 		if missing:
 			self._logger.warning("This Octoprint version lacks internals BufferBuddy needs ({}), staying inactive".format(", ".join(missing)))
-			self.set_state(self.state, self.inactive_status)
+		if missing or not was_compatible:
+			self.refresh_status()
 
 	def raise_clear_to_send_max(self, comm):
 		# Only on this connection: the saved "ok buffer size" is untouched and the next connection starts from it again.
@@ -327,7 +339,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			self._logger.exception("BufferBuddy failed handling {!r}, staying inactive until the printer reconnects".format(line))
 			self.compatible = False
 			self.inactive_status = 'Error, inactive until reconnect (see octoprint.log)'
-			self.set_state(self.state, self.inactive_status)
+			self.refresh_status()
 			try:
 				self.restore_clear_to_send_max(comm)
 			except Exception:
@@ -340,16 +352,24 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		# it sets the resend to 0 lines back, which sends the oldest line in its history numbered as the next one: a
 		# valid line with the wrong move in it. Lines in flight behind a bad one bring a request each, so with many in
 		# flight that happens.
+		if comm._resendDelta is None:
+			return False
 		lower_line = line.lower()
 		if not (lower_line.startswith("resend") or lower_line.startswith("rs")):
 			return False
-		return comm._resendDelta is not None and parse_resend_line(line) == comm._current_line
+		return parse_resend_line(line) == comm._current_line
 
 	# Assumptions: This is never called concurrently, and we are free to access anything in comm
 	# FIXME: Octoprint considers the job finished when the last line is sent, even when there are lines inflight
 	def handle_received(self, comm, line):
 		matches = ADVANCED_OK.search(line) if "ok " in line else None
 		ok_line_number = None if matches is None or matches.group('line') is None else int(matches.group('line'))
+
+		# Before detecting the buffer sizes: an error there then keeps this connection inactive
+		if comm is not self.checked_comm:
+			self.check_compatibility(comm)
+		if not self.compatible:
+			return line
 
 		# Figure out the buffer sizes, for the inflight target and the planner fill, from the response to N0 M110 N0
 		# Important: This runs before on_after_startup
@@ -361,11 +381,6 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 			# We add +1 here as ok will always return BUFSIZE-1 as we've just sent it a command
 			command_buffer_size = int(matches.group('command_buffer_avail')) + 1
 			self.set_buffer_sizes(planner_buffer_size, command_buffer_size)
-
-		if comm is not self.checked_comm:
-			self.check_compatibility(comm)
-		if not self.compatible:
-			return line
 
 		if self.enabled and self.is_stale_resend_request(comm, line):
 			self._logger.info("Ignoring {!r}: Octoprint hasn't sent line {} yet and would resend the wrong line under its number".format(line.strip(), comm._current_line))
@@ -409,21 +424,20 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 		# in transit or in the printer's serial RX buffer, which ADVANCED_OK doesn't report and which overflows
 		# (dropping bytes) if a burst arrives while the printer is busy. So after Octoprint's line for this ok
 		# and ours, everything not yet in the command queue must still fit in the RX buffer. A ring buffer holds one
-		# byte less than its size.
+		# byte less than its size. Checked after the target: the estimate counts our line, which isn't sent at the
+		# target anyway, so it would blame the RX buffer for what the target holds back.
 		queued = self.command_buffer_size - command_buffer_avail - 1
-		rx_buffer_bytes = self.rx_buffer_bytes(comm, ok_line_number, queued)
-		fits_rx_buffer = rx_buffer_bytes is not None and rx_buffer_bytes <= self.rx_buffer_size - 1
 
 		# At most one extra line per ok, so inflight climbs to the target over that many oks. Octoprint's monitor
 		# thread sends a line for this ok as well, so the command queue needs room for 2.
 		if command_buffer_avail <= 2:
 			limit = 'command_buffer'
-		elif not fits_rx_buffer:
-			limit = 'rx_buffer'
 		elif inflight >= self.inflight_target:
 			limit = 'target'
 		else:
-			limit = None
+			rx_buffer_bytes = self.rx_buffer_bytes(comm, ok_line_number, queued)
+			fits_rx_buffer = rx_buffer_bytes is not None and rx_buffer_bytes <= self.rx_buffer_size - 1
+			limit = None if fits_rx_buffer else 'rx_buffer'
 		should_send = limit is None
 
 		active = self.enabled and self.streaming_job(comm)
@@ -449,6 +463,7 @@ class BufferBuddyPlugin(octoprint.plugin.SettingsPlugin,
 				# what held inflight back on most oks, None while it was still rising
 				limited_by=max(self.limits_since_report, key=self.limits_since_report.get) if self.limits_since_report else None,
 			)
+			self.last_update_at = now
 			self.send_message("update", self.last_update)
 			self._logger.debug("current line: %s ok line: %s buffer avail: %s inflight: %s cts: %s cts_max: %s queue: %s",
 				current_line_number, ok_line_number, command_buffer_avail, inflight, comm._clear_to_send.counter, comm._clear_to_send.max, queue_size)
